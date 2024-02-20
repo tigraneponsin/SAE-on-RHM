@@ -35,6 +35,35 @@ class MyLinear(nn.Module):
         x = F.linear( x, self.weight, self.bias) / x.size(-1)**.5 # standard scaling
         return x
 
+class Perceptron(nn.Module):
+    def __init__(
+        self, input_dim, out_dim, norm
+    ):
+        """
+        Perceptron
+
+        Args:
+            input_dim: The input dimension.
+            out_dim: The output dimension.
+            norm: The output normalisation.
+        """
+        super().__init__()
+        self.readout = nn.Parameter(
+            torch.randn(input_dim, out_dim)
+        )
+        self.norm = norm
+
+    def forward(self, x):
+        """
+        Args:
+            x: input, tensor of size (batch_size, *, input_dim).
+        
+        Returns:
+            Output of a perceptron, tensor of size (batch_size, *, out_dim)
+        """
+        x = x @ self.readout / self.norm
+        return x
+
 class MLP(nn.Module):
     def __init__(
         self, input_dim, nn_dim, out_dim, num_layers, bias=False, norm='std'

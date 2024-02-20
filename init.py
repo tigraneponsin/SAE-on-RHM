@@ -1,3 +1,5 @@
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,6 +8,24 @@ import torch.optim as optim
 import datasets
 import models
 import measures
+
+
+class CosineWarmupLR(optim.lr_scheduler._LRScheduler):
+
+    def __init__(self, optimizer, warmup, max_iters):
+        self.warmup = warmup
+        self.max_num_iters = max_iters
+        super().__init__(optimizer)
+
+    def get_lr(self):
+        lr_factor = self.get_lr_factor(epoch=self.last_epoch)
+        return [base_lr * lr_factor for base_lr in self.base_lrs]
+
+    def get_lr_factor(self, epoch):
+        lr_factor = 0.5 * (1 + np.cos(np.pi * epoch / self.max_num_iters))
+        if epoch <= self.warmup:
+            lr_factor *= epoch * 1.0 / self.warmup
+        return lr_factor
 
 
 def init_data(args):
@@ -34,19 +54,24 @@ def init_data(args):
     else:
         raise ValueError('dataset argument is invalid!')
 
-    if args.mode == 'masked':
+    if args.mode == 'masked':	# hide last feature from input and set it as label
 
         dataset.labels = torch.argmax( dataset.features[:,:,-1],dim=1)
 
-        if 'fcn' in args.model:	# remove masked token from the input
+        if 'fcn' in args.model:	# for fcn remove masked token from the input
             input_size = args.tuple_size**args.num_layers
             dataset.features = dataset.features[:,:,0:(input_size - 1)]
-        else:
-            raise ValueError('MaskedLanguageModelling only implemented for FCN!')
-            # TODO: replace masked token
 
-    if 'fcn' in args.model:	# flattening required when using fully-connected networks
-        dataset.features = dataset.features.transpose(1,2).flatten( start_dim=1)	# groups of adjacent num_features correspond to a pixel
+        else:				# for other models replace masked token with ones
+            mask = torch.ones(args.num_features)/mask.norm()
+            mask = torch.tile( mask, [args.train_size+args.test_size, 1])
+            dataset.features[:,:,-1] = mask
+
+    if 'fcn' in args.model:		# fcn requires flattening of the input
+        dataset.features = dataset.features.transpose(1,2).flatten( start_dim=1) # groups of adjacent num_features correspond to a pixel
+    if 'transformer' in args.model:	# transformer requires [batch_size, seq_len, num_channels] format
+        dataset.features = dataset.features.transpose(1,2)
+        # TODO: append classification token to input for transformers used in class
 
     dataset.features, dataset.labels = dataset.features.to(args.device), dataset.labels.to(args.device)	# move to device when using cuda
 
@@ -73,14 +98,21 @@ def init_model(args):
         if args.mode == 'masked':
             input_size -= 1
 
-        model = models.MLP(
-            input_dim=input_size*args.num_features,
-            nn_dim=args.width,
-            out_dim=args.num_classes,
-            num_layers=args.depth,
-            bias=args.bias,
-            norm='mf' #TODO: add arg for different norm
-        )
+        if args.depth == 0:
+            model = models.Perceptron(
+                input_dim=input_size*args.num_features,
+                out_dim=args.num_classes,
+                norm=input_size
+            )
+        else:
+            model = models.MLP(
+                input_dim=input_size*args.num_features,
+                nn_dim=args.width,
+                out_dim=args.num_classes,
+                num_layers=args.depth,
+                bias=args.bias,
+                norm='mf' #TODO: add arg for different norm
+            )
 
     elif args.model == 'hcnn':
 
@@ -97,6 +129,22 @@ def init_model(args):
             norm='mf' #TODO: add arg for different norm
         )
 
+    elif 'transformer' in args.model:
+    
+        args.width = 1 # TODO: fix, width not required for transformer
+        assert args.num_heads is not None, 'transformer model requires argument num_heads!'
+        assert args.embedding_dim is not None, 'transformer model requires argument embedding_dim!'
+
+        if args.model == 'transformer_mlsa':
+
+            model = models.MLSA(
+                vocab_size=args.num_features,
+                block_size=args.tuple_size**args.num_layers,
+                embedding_dim=args.embedding_dim,
+                num_heads=args.num_heads,
+                num_layers=args.depth
+            )
+
     else:
         raise ValueError('model argument is invalid!')
 
@@ -111,12 +159,12 @@ def init_training( model, args):
     criterion = nn.CrossEntropyLoss( reduction='mean')
     
     if args.optim == 'sgd':
-        optimizer = optim.SGD(
+        optimizer = optim.SGD( # TODO: fix, width not required for transformer
             model.parameters(), lr=args.lr*args.width, momentum=args.momentum
         )
     elif args.optim =='adam':
         optimizer = optim.Adam(
-            model.parameters(), lr=args.lr*args.width
+            model.parameters(), lr=args.lr
         )
     else:
         raise ValueError("optimizer is invalid (sgd, adam)!")
@@ -124,10 +172,14 @@ def init_training( model, args):
     if args.scheduler is None:
         scheduler = optim.lr_scheduler.StepLR(
             optimizer, step_size=args.max_epochs
-        )      
+        )
     elif args.scheduler =='cosine':
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        scheduler = optim.lr_scheduler.CosineAnnealingLR( # TODO: fix, width not required for transformer
             optimizer, T_max=args.scheduler_time, eta_min = 0.1*args.lr*args.width
+        )
+    elif args.scheduler =='warmup':
+        scheduler = CosineWarmupLR(
+            optimizer, args.warmup, max_iters=args.max_epochs
         )
 
     return criterion, optimizer, scheduler

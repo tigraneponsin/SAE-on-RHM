@@ -41,6 +41,8 @@ def run( args):
     model = init.init_model( args)
     model0 = copy.deepcopy( model)
 
+    if args.scheduler_time is None:
+        args.scheduler_time = args.max_epochs
     criterion, optimizer, scheduler = init.init_training( model, args)
 
     dynamics, best = init.init_output( model, criterion, train_loader, test_loader, args)
@@ -133,6 +135,8 @@ parser.add_argument('--model', type=str, help='architecture (fcn and hcnn implem
 parser.add_argument('--depth', type=int, help='depth of the network')
 parser.add_argument('--width', type=int, help='width of the network')
 parser.add_argument("--filter_size", type=int, default=None)
+parser.add_argument('--num_heads', type=int, help='number of heads (transformer only)')
+parser.add_argument('--embedding_dim', type=int, help='embedding dimension (transformer only)')
 parser.add_argument('--bias', default=False, action='store_true')
 parser.add_argument("--seed_model", type=int, help='seed for model initialization')
 '''
@@ -143,6 +147,7 @@ parser.add_argument('--optim', type=str, default='sgd')
 parser.add_argument('--accumulation', default=False, action='store_true')
 parser.add_argument('--momentum', type=float, default=0.9)
 parser.add_argument('--scheduler', type=str, default=None)
+parser.add_argument('--warmup', type=int, default=100)
 parser.add_argument('--scheduler_time', type=int, default=None)
 parser.add_argument('--max_epochs', type=int, default=100)
 '''
