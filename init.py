@@ -63,7 +63,7 @@ def init_data(args):
             dataset.features = dataset.features[:,:,0:(input_size - 1)]
 
         else:				# for other models replace masked token with ones
-            mask = torch.ones(args.num_features)/mask.norm()
+            mask = torch.ones(args.num_features)*args.num_features**-.5
             mask = torch.tile( mask, [args.train_size+args.test_size, 1])
             dataset.features[:,:,-1] = mask
 
@@ -135,9 +135,9 @@ def init_model(args):
         assert args.num_heads is not None, 'transformer model requires argument num_heads!'
         assert args.embedding_dim is not None, 'transformer model requires argument embedding_dim!'
 
-        if args.model == 'transformer_mlsa':
+        if args.model == 'transformer_mla':
 
-            model = models.MLSA(
+            model = models.MLA(
                 vocab_size=args.num_features,
                 block_size=args.tuple_size**args.num_layers,
                 embedding_dim=args.embedding_dim,
