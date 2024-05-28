@@ -48,7 +48,8 @@ def init_data(args):
             test_size=args.test_size,
             seed_sample=args.seed_sample,
             input_format=args.input_format,
-            whitening=args.whitening
+            whitening=args.whitening,
+            replacement=args.replacement
         )
 
     else:

@@ -1,4 +1,6 @@
 from itertools import *
+import warnings
+import copy
 
 import numpy as np
 import random
@@ -39,7 +41,67 @@ def sample_rules( v, n, m, s, L, seed=42):
         return rules
 
 
-def sample_data_from_rules(samples, rules, n, m, s, L):
+def sample_data_from_generator_classes(g, y, rules, return_tree_structure=False):
+    """
+    Create data of the Random Hierarchy Model starting from its rules, a seed and a set of class labels.
+
+    Args:
+        g: A torch.Generator object.
+        y: A tensor of size [batch_size, 1] containing the class labels.
+        rules: A dictionary containing the rules for each level of the hierarchy.
+        return_tree_structure: If True, return the tree structure of the hierarchy as a dictionary.
+
+    Returns:
+        A tuple containing the inputs and outputs of the model.
+    """
+    L = len(rules)  # Number of levels in the hierarchy
+
+    labels = copy.deepcopy(y)
+
+    if return_tree_structure:
+        x_st = (
+            {}
+        )  # Initialize the dictionary to store the values and messages for each variable in the hierarchy
+        x_st[0] = y
+        for i in range(L):  # Loop over the levels of the hierarchy
+            chosen_rule = torch.randint(
+                low=0, high=rules[i].shape[1], size=x_st[i].shape, generator=g
+            )  # Choose a random rule for each variable in the current level
+            x_st[i + 1] = rules[i][x_st[i], chosen_rule].flatten(
+                start_dim=1
+            )  # Apply the chosen rule to each variable in the current level
+        return x_st, labels
+    else:
+        x = y
+        for i in range(L):
+            chosen_rule = torch.randint(
+                low=0, high=rules[i].shape[1], size=x.shape, generator=g
+            )
+            x = rules[i][x, chosen_rule].flatten(start_dim=1)
+        return x, labels
+    
+
+def sample_with_replacement(train_size, test_size, seed_sample, rules):
+
+    n = rules[0].shape[0]  # Number of classes
+
+    if train_size == -1:
+        warnings.warn(
+            "Whole dataset (train_size=-1) not available with replacement! Using train_size=1e6.",
+            RuntimeWarning,
+        )
+        train_size = 1000000
+
+    g = torch.Generator()
+    g.manual_seed(seed_sample)
+
+    y = torch.randint(low=0, high=n, size=(train_size + test_size,), generator=g)
+    features, labels = sample_data_from_generator_classes(g, y, rules)
+
+    return features, labels
+
+
+def sample_data_from_indeces(samples, rules, n, m, s, L):
     """
     Create data of the Random Hierarchy Model starting from a set of rules and the sampled indices.
 
@@ -81,6 +143,26 @@ def sample_data_from_rules(samples, rules, n, m, s, L):
     return features, labels
 
 
+def sample_without_replacement(max_data, train_size, test_size, seed_sample, rules):
+
+    L = len(rules)  # Number of levels in the hierarchy
+    n = rules[0].shape[0]  # Number of classes
+    m = rules[0].shape[1]  # Number of synonymic lower-level representations
+    s = rules[0].shape[2]  # Size of lower-level representations
+
+    if train_size == -1:
+        samples = torch.arange(max_data)
+    else:
+        test_size = min(test_size, max_data - train_size)
+
+        random.seed(seed_sample)
+        samples = torch.tensor(random.sample(range(max_data), train_size + test_size))
+
+    features, labels = sample_data_from_indeces(samples, rules, n, m, s, L)
+
+    return features, labels
+
+
 class RandomHierarchyModel(Dataset):
     """
     Implement the Random Hierarchy Model (RHM) as a PyTorch dataset.
@@ -100,6 +182,7 @@ class RandomHierarchyModel(Dataset):
             input_format='onehot',
             whitening=0,
             transform=None,
+            replacement=False,
     ):
 
         self.num_features = num_features
@@ -111,23 +194,26 @@ class RandomHierarchyModel(Dataset):
         rules = sample_rules( num_features, num_classes, num_synonyms, tuple_size, num_layers, seed=seed_rules)
  
         max_data = num_classes * num_synonyms ** ((tuple_size ** num_layers - 1) // (tuple_size - 1))
-        assert max_data < 1e19, "dataset size cannot be represented with int64!! Parameters too large! Please open a github issue if you need a solution."
+        assert train_size >= -1, "train_size must be greater than or equal to -1"
 
-        if train_size == -1:
+        if max_data > 1e19 and not replacement:
+            print(
+                "Max dataset size cannot be represented with int64! Using sampling with replacement."
+            )
+            warnings.warn(
+                "Max dataset size cannot be represented with int64! Using sampling with replacement.",
+                RuntimeWarning,
+            )
+            replacement = True
 
-            samples = torch.arange( max_data)
-
+        if not replacement:
+            self.features, self.labels = sample_without_replacement(
+                max_data, train_size, test_size, seed_sample, rules
+            )
         else:
-
-            test_size = min( test_size, max_data-train_size)
-
-            random.seed(seed_sample)
-            samples = torch.tensor( random.sample( range(max_data), train_size+test_size))
-
-        self.features, self.labels = sample_data_from_rules(
-            samples, rules, num_classes, num_synonyms, tuple_size, num_layers
-        )
-
+            self.features, self.labels = sample_with_replacement(
+                train_size, test_size, seed_sample, rules
+            )
 
         if 'onehot' not in input_format:
             assert not whitening, "Whitening only implemented for one-hot encoding"
@@ -172,3 +258,6 @@ class RandomHierarchyModel(Dataset):
             x, y = self.transform(x, y)
 
         return x, y
+    
+    def get_rules(self):
+        return self.rules

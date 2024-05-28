@@ -126,6 +126,7 @@ parser.add_argument('--train_size', metavar='Ptr', type=int, help='training set 
 parser.add_argument('--batch_size', metavar='B', type=int, help='batch size')
 parser.add_argument('--test_size', metavar='Pte', type=int, help='test set size')
 parser.add_argument("--seed_sample", type=int, help='seed for the sampling of train and testset')
+parser.add_argument("--replacement", default=False, action="store_true", help="sample with replacement for the rhm dataset")
 parser.add_argument('--input_format', type=str, default='onehot')
 parser.add_argument('--whitening', type=int, default=0)
 '''
