@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .fcn import MLP
 
 class MultiHeadAttention(nn.Module):
     """
@@ -9,8 +10,8 @@ class MultiHeadAttention(nn.Module):
     
     Args:
         input_dim: The dimension of input tokens.
-        input_size: The (maximal) number of input tokens.
         num_heads: The number of heads.
+        head_dim: The dimension of each head.
         out_dim: The dimension of output tokens.
         
     """
@@ -72,7 +73,7 @@ class AttentionBlock(nn.Module):
             input_dim=embedding_dim,
             num_heads=num_heads,
             head_dim=embedding_dim//num_heads,
-            out_dim=embedding_dim, 
+            out_dim=embedding_dim
         )
 
     def forward(self, x):
@@ -80,9 +81,45 @@ class AttentionBlock(nn.Module):
         return x
 
 
+class EncoderBlock(nn.Module):
+    """
+    One Decoder Block.
+    
+    Args:
+        embedding_dim: The dimension of the tokens (kept constant past embedding).
+        num_heads: The number of attention heads.
+        ffwd_size: Size of the MLP is ffwd_size*embedding_dim.
+    """
+    def __init__(
+        self, embedding_dim, num_heads, ffwd_size=4
+    ):
+        super().__init__()
+        assert embedding_dim % num_heads == 0, "embedding dim. must be multiple of num. heads"
+
+        self.sa = MultiHeadAttention(
+            input_dim=embedding_dim,
+            num_heads=num_heads,
+            head_dim=embedding_dim//num_heads,
+            out_dim=embedding_dim
+        )
+        self.ffwd = MLP(
+            input_dim=embedding_dim, 
+            nn_dim=ffwd_size*embedding_dim, 
+            out_dim=embedding_dim, 
+            num_layers=1
+        )
+        self.ln1 = nn.LayerNorm(embedding_dim)
+        self.ln2 = nn.LayerNorm(embedding_dim)
+
+    def forward(self, x):
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
+        return x
+
+
 class MLA(nn.Module):
     """
-    Multi-Layer Multi-Head Attention
+    Multi-Layer Multi-Head Attention for last token prediction
 
     Args:
         vocab_size: The dimension of input tokens.
