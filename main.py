@@ -31,6 +31,7 @@ def run( args):
         args.batch_size = args.train_size
     
     assert (args.train_size%args.batch_size)==0, 'batch_size must divide train_size!'
+
     if args.accumulation:
         accumulation = args.train_size // args.batch_size
     else:
@@ -64,15 +65,16 @@ def run( args):
         if (epoch+1)==print_ckpt:
 
             avg_epoch_time = (time.time()-start_time)/(epoch+1)
-            train_acc = measures.test(model, train_loader)
-            test_acc = measures.test(model, test_loader)
-            if test_acc>best['acc']: # update best model if accuracy is higher
+            test_loss, test_acc = measures.test(model, test_loader)
+
+            if test_loss<best['loss']: # update best model if loss is smaller
                 best['epoch'] = epoch+1
+                best['loss'] = test_loss
                 best['acc'] = test_acc
                 best['model'] = copy.deepcopy( model.state_dict())
 
-            dynamics.append({'t': epoch+1, 'loss': loss, 'trainacc': train_acc, 'testacc': test_acc})
-            print('Epoch : ',epoch+1, '\t', 'train loss:', loss, '\t', 'train acc.:', train_acc, '\t', 'test acc.:', test_acc, '\t', 'time per epoch:', avg_epoch_time)
+            dynamics.append({'t': epoch+1, 'trainloss': loss, 'testloss': test_loss, 'testacc': test_acc})
+            print('Epoch : ',epoch+1, '\t train loss: {:06.4f}'.format(loss), ',test loss: {:06.4f}'.format(test_loss), ', test acc.: {:04.2f}'.format(test_acc), ', epoch time: {:5f}'.format(avg_epoch_time))
             print_ckpt = next(print_ckpts)
 
             if (epoch+1)==save_ckpt:
@@ -122,11 +124,12 @@ parser.add_argument('--num_synonyms', metavar='m', type=int, help='multiplicity 
 parser.add_argument('--tuple_size', metavar='s', type=int, help='size of low-level representations')
 parser.add_argument('--num_layers', metavar='L', type=int, help='number of layers')
 parser.add_argument("--seed_rules", type=int, help='seed for the dataset')
+parser.add_argument("--num_tokens", type=int, help='number of input tokens (spatial size)')
 parser.add_argument('--train_size', metavar='Ptr', type=int, help='training set size')
 parser.add_argument('--batch_size', metavar='B', type=int, help='batch size')
 parser.add_argument('--test_size', metavar='Pte', type=int, help='test set size')
 parser.add_argument("--seed_sample", type=int, help='seed for the sampling of train and testset')
-parser.add_argument("--replacement", default=False, action="store_true", help="sample with replacement for the rhm dataset")
+parser.add_argument("--replacement", default=False, action="store_true", help='allow for replacement in the dataset sampling')
 parser.add_argument('--input_format', type=str, default='onehot')
 parser.add_argument('--whitening', type=int, default=0)
 '''
@@ -148,7 +151,6 @@ parser.add_argument('--optim', type=str, default='sgd')
 parser.add_argument('--accumulation', default=False, action='store_true')
 parser.add_argument('--momentum', type=float, default=0.9)
 parser.add_argument('--scheduler', type=str, default=None)
-parser.add_argument('--warmup', type=int, default=100)
 parser.add_argument('--scheduler_time', type=int, default=None)
 parser.add_argument('--max_epochs', type=int, default=100)
 '''

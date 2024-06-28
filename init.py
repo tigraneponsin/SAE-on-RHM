@@ -1,4 +1,5 @@
 import numpy as np
+import math
 
 import torch
 import torch.nn as nn
@@ -40,17 +41,21 @@ def init_data(args):
         dataset = datasets.RandomHierarchyModel(
             num_features=args.num_features,	# vocabulary size
             num_synonyms=args.num_synonyms,	# features multiplicity
-            num_layers=args.num_layers,	# number of layers
+            num_layers=args.num_layers,		# number of layers
             num_classes=args.num_classes,	# number of classes
-            tuple_size=args.tuple_size,	# number of branches of the tree
+            tuple_size=args.tuple_size,		# number of branches of the tree
             seed_rules=args.seed_rules,
             train_size=args.train_size,
             test_size=args.test_size,
             seed_sample=args.seed_sample,
             input_format=args.input_format,
-            whitening=args.whitening,
-            replacement=args.replacement
+            whitening=args.whitening,		# 1 for standardising input
+            replacement=args.replacement	# Automatically true for num_data > 1e19
         )
+
+        args.input_size = args.tuple_size**args.num_layers
+        if args.num_tokens < args.input_size:	# only take last num_tokens positions
+            dataset.features = dataset.features[:,:,-args.num_tokens:]
 
     else:
         raise ValueError('dataset argument is invalid!')
@@ -60,8 +65,8 @@ def init_data(args):
         dataset.labels = torch.argmax( dataset.features[:,:,-1],dim=1)
 
         if 'fcn' in args.model:	# for fcn remove masked token from the input
-            input_size = args.tuple_size**args.num_layers
-            dataset.features = dataset.features[:,:,0:(input_size - 1)]
+            dataset.features = dataset.features[:,:,:-1]
+            args.num_tokens -= 1
 
         else:				# for other models replace masked token with ones
             mask = torch.ones(args.num_features)*args.num_features**-.5
@@ -70,6 +75,7 @@ def init_data(args):
 
     if 'fcn' in args.model:		# fcn requires flattening of the input
         dataset.features = dataset.features.transpose(1,2).flatten( start_dim=1) # groups of adjacent num_features correspond to a pixel
+
     if 'transformer' in args.model:	# transformer requires [batch_size, seq_len, num_channels] format
         dataset.features = dataset.features.transpose(1,2)
         # TODO: append classification token to input for transformers used in class
@@ -95,32 +101,34 @@ def init_model(args):
 
     if args.model == 'fcn':
 
-        input_size = args.tuple_size**args.num_layers
-        if args.mode == 'masked':
-            input_size -= 1
-
         if args.depth == 0:
             model = models.Perceptron(
-                input_dim=input_size*args.num_features,
+                input_dim=args.num_tokens*args.num_features,
                 out_dim=args.num_classes,
-                norm=input_size
+                norm=args.num_tokens**.5
             )
         else:
+
+            assert args.width is not None, 'FCN model requires argument width!'
             model = models.MLP(
-                input_dim=input_size*args.num_features,
+                input_dim=args.num_tokens*args.num_features,
                 nn_dim=args.width,
                 out_dim=args.num_classes,
                 num_layers=args.depth,
                 bias=args.bias,
                 norm='mf' #TODO: add arg for different norm
             )
+            args.lr *= args.width #TODO: modify for different norm
 
     elif args.model == 'hcnn':
 
+        assert args.width is not None, 'CNN model requires argument width!'
         assert args.filter_size is not None, 'CNN model requires argument filter_size!'
+        exponent = math.log(args.num_tokens)/math.log(args.filter_size)
+        assert args.depth == exponent, 'hierarchical CNN requires num_tokens == filter_size**depth'
 
         model = models.hCNN(
-            input_dim=args.tuple_size**args.num_layers,
+            input_dim=args.num_tokens,
             patch_size=args.filter_size,
             in_channels=args.num_features,
             nn_dim=args.width,
@@ -129,10 +137,29 @@ def init_model(args):
             bias=args.bias,
             norm='mf' #TODO: add arg for different norm
         )
+        args.lr *= args.width #TODO: modify for different norm
+
+    elif args.model == 'hlcn':
+
+        assert args.width is not None, 'LCN model requires argument width!'
+        assert args.filter_size is not None, 'LCN model requires argument filter_size!'
+        exponent = math.log(args.num_tokens)/math.log(args.filter_size)
+        assert args.depth == exponent, 'hierarchical LCN requires num_tokens == filter_size**depth'
+
+        model = models.hLCN(
+            input_dim=args.num_tokens,
+            patch_size=args.filter_size,
+            in_channels=args.num_features,
+            nn_dim=args.width,
+            out_channels=args.num_classes,
+            num_layers=args.depth,
+            bias=args.bias,
+            norm='mf' #TODO: add arg for different norm
+        )
+        args.lr *= args.width #TODO: modify for different norm
 
     elif 'transformer' in args.model:
-    
-        args.width = 1 # TODO: fix, width not required for transformer
+
         assert args.num_heads is not None, 'transformer model requires argument num_heads!'
         assert args.embedding_dim is not None, 'transformer model requires argument embedding_dim!'
 
@@ -140,7 +167,7 @@ def init_model(args):
 
             model = models.MLA(
                 vocab_size=args.num_features,
-                block_size=args.tuple_size**args.num_layers,
+                block_size=args.num_tokens,
                 embedding_dim=args.embedding_dim,
                 num_heads=args.num_heads,
                 num_layers=args.depth
@@ -160,8 +187,8 @@ def init_training( model, args):
     criterion = nn.CrossEntropyLoss( reduction='mean')
     
     if args.optim == 'sgd':
-        optimizer = optim.SGD( # TODO: fix, width not required for transformer
-            model.parameters(), lr=args.lr*args.width, momentum=args.momentum
+        optimizer = optim.SGD(
+            model.parameters(), lr=args.lr, momentum=args.momentum
         )
     elif args.optim =='adam':
         optimizer = optim.Adam(
@@ -175,12 +202,12 @@ def init_training( model, args):
             optimizer, step_size=args.max_epochs
         )
     elif args.scheduler =='cosine':
-        scheduler = optim.lr_scheduler.CosineAnnealingLR( # TODO: fix, width not required for transformer
-            optimizer, T_max=args.scheduler_time, eta_min = 0.1*args.lr*args.width
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.scheduler_time, eta_min = 0.1*args.lr
         )
     elif args.scheduler =='warmup':
         scheduler = CosineWarmupLR(
-            optimizer, args.warmup, max_iters=args.max_epochs
+            optimizer, args.scheduler_time, max_iters=args.max_epochs
         )
 
     return criterion, optimizer, scheduler
@@ -192,19 +219,12 @@ def init_output( model, criterion, train_loader, test_loader, args):
     Returns:
         list with the dynamics, best model.
     """
-    init_loss = 0.
-    with torch.no_grad():
-        for batch_idx, (inputs, targets) in enumerate(train_loader):
 
-            outputs = model(inputs)
-            init_loss += criterion(outputs, targets).item()
-
-    init_loss /= (batch_idx+1)
-
-    dynamics = [{'t': 0, 'loss': init_loss, 'trainacc':measures.test(model, train_loader), 'testacc': measures.test(model, test_loader)}] # add additional observables here
-    best = {'epoch':0, 'model': None, 'acc': 1./args.num_classes}
-
-    return dynamics, best
+    trainloss, trainacc = measures.test(model, train_loader)
+    testloss, testacc = measures.test(model, test_loader)
+    
+    dynamics = [{'t': 0, 'trainloss': trainloss, 'testloss': testloss, 'testacc': testacc}] # add additional observables here
+    best = {'epoch':0, 'model': None, 'loss': testloss, 'acc': testacc}
 
 def init_loglinckpt( step, end, fill=False):
     """
