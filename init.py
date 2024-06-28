@@ -226,6 +226,8 @@ def init_output( model, criterion, train_loader, test_loader, args):
     dynamics = [{'t': 0, 'trainloss': trainloss, 'testloss': testloss, 'testacc': testacc}] # add additional observables here
     best = {'epoch':0, 'model': None, 'loss': testloss, 'acc': testacc}
 
+    return dynamics, best
+
 def init_loglinckpt( step, end, fill=False):
     """
     Initialise checkpoint iterator.
