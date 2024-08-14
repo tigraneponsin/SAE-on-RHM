@@ -199,7 +199,7 @@ def init_training( model, args):
 
     if args.scheduler is None:
         scheduler = optim.lr_scheduler.StepLR(
-            optimizer, step_size=args.max_epochs
+            optimizer, step_size=args.max_iters
         )
     elif args.scheduler =='cosine':
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -207,7 +207,7 @@ def init_training( model, args):
         )
     elif args.scheduler =='warmup':
         scheduler = CosineWarmupLR(
-            optimizer, args.scheduler_time, max_iters=args.max_epochs
+            optimizer, args.scheduler_time, max_iters=args.max_iters
         )
 
     return criterion, optimizer, scheduler
@@ -224,7 +224,7 @@ def init_output( model, criterion, train_loader, test_loader, args):
     testloss, testacc = measures.test(model, test_loader)
     
     dynamics = [{'t': 0, 'trainloss': trainloss, 'testloss': testloss, 'testacc': testacc}] # add additional observables here
-    best = {'epoch':0, 'model': None, 'loss': testloss, 'acc': testacc}
+    best = {'step':0, 'model': None, 'loss': testloss, 'acc': testacc}
 
     return dynamics, best
 

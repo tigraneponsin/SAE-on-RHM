@@ -31,11 +31,8 @@ def run( args):
         args.batch_size = args.train_size
     
     assert (args.train_size%args.batch_size)==0, 'batch_size must divide train_size!'
-
-    if args.accumulation:
-        accumulation = args.train_size // args.batch_size
-    else:
-        accumulation = 1
+    args.num_batches = args.train_size//args.batch_size
+    args.max_iters = args.max_epochs*args.num_batches
 
     train_loader, test_loader = init.init_data( args)
 
@@ -43,75 +40,90 @@ def run( args):
     model0 = copy.deepcopy( model)
 
     if args.scheduler_time is None:
-        args.scheduler_time = args.max_epochs
+        args.scheduler_time = args.max_iters
     criterion, optimizer, scheduler = init.init_training( model, args)
 
     dynamics, best = init.init_output( model, criterion, train_loader, test_loader, args)
     if args.print_freq >= 10:
-        print_ckpts = init.init_loglinckpt( args.print_freq, args.max_epochs, fill=True)
+        print_ckpts = init.init_loglinckpt( args.print_freq, args.max_iters, fill=True)
     else:
-        print_ckpts = init.init_loglinckpt( args.print_freq, args.max_epochs, fill=False)
-    save_ckpts = init.init_loglinckpt( args.save_freq, args.max_epochs, fill=False)
-
+        print_ckpts = init.init_loglinckpt( args.print_freq, args.max_iters, fill=False)
+    save_ckpts = init.init_loglinckpt( args.save_freq, args.max_iters, fill=False)
     print_ckpt = next(print_ckpts)
     save_ckpt = next(save_ckpts)
 
     start_time = time.time()
+    step = 0
 
     for epoch in range(args.max_epochs):
 
-        loss = training.train( model, train_loader, accumulation, criterion, optimizer, scheduler)
+        model.train()
+        optimizer.zero_grad()
+        running_loss = 0.
 
-        if (epoch+1)==print_ckpt:
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
 
-            avg_epoch_time = (time.time()-start_time)/(epoch+1)
-            test_loss, test_acc = measures.test(model, test_loader)
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            running_loss += loss.item()
+            loss /= args.accumulation
+            loss.backward()
 
-            if test_loss<best['loss']: # update best model if loss is smaller
-                best['epoch'] = epoch+1
-                best['loss'] = test_loss
-                best['acc'] = test_acc
-                best['model'] = copy.deepcopy( model.state_dict())
+            if ((batch_idx+1)%args.accumulation==0):
+                optimizer.step()
+                optimizer.zero_grad()
+                scheduler.step()
+                step += 1
 
-            dynamics.append({'t': epoch+1, 'trainloss': loss, 'testloss': test_loss, 'testacc': test_acc})
-            print('Epoch : ',epoch+1, '\t train loss: {:06.4f}'.format(loss), ',test loss: {:06.4f}'.format(test_loss), ', test acc.: {:04.2f}'.format(test_acc), ', epoch time: {:5f}'.format(avg_epoch_time))
-            print_ckpt = next(print_ckpts)
+                if step==print_ckpt:
 
-            if (epoch+1)==save_ckpt:
+                    test_loss, test_acc = measures.test(model, test_loader)
 
-                print(f'Checkpoint at epoch {epoch+1}, saving data ...')
-                output = {
-                    'init': model0.state_dict(),
-                    'best': best,
-                    'model': copy.deepcopy(model.state_dict()),
-                    'dynamics': dynamics,
-                    'epoch': epoch+1
-                }
-                with open(args.outname, "wb") as handle:
-                    pickle.dump(args, handle)
-                    pickle.dump(output, handle)
-                save_ckpt = next(save_ckpts)
+                    if test_loss<best['loss']: # update best model if loss is smaller
+                        best['step'] = step
+                        best['loss'] = test_loss
+                        best['acc'] = test_acc
+                        best['model'] = copy.deepcopy( model.state_dict())
 
-            if loss <= args.loss_threshold:
+                    dynamics.append({'t': step, 'trainloss': running_loss/(batch_idx+1), 'testloss': test_loss, 'testacc': test_acc})
+                    print('step : ',step, '\t train loss: {:06.4f}'.format(running_loss/(batch_idx+1)), ',test loss: {:06.4f}'.format(test_loss), ', test acc.: {:04.2f}'.format(test_acc))
+                    print_ckpt = next(print_ckpts)
 
-                output = {
-                    'init': model0.state_dict(),
-                    'best': best,
-                    'model': copy.deepcopy(model.state_dict()),
-                    'dynamics': dynamics,
-                    'epoch': epoch+1
-                }
-                with open(args.outname, "wb") as handle:
-                    pickle.dump(args, handle)
-                    pickle.dump(output, handle)
+                    if step==save_ckpt:
 
-                break
+                        print(f'Checkpoint at step {step}, saving data ...')
+                        output = {
+                            'init': model0.state_dict(),
+                            'best': best,
+                            'model': copy.deepcopy(model.state_dict()),
+                            'dynamics': dynamics,
+                            'step': step
+                        }
+                        with open(args.outname, "wb") as handle:
+                            pickle.dump(args, handle)
+                            pickle.dump(output, handle)
+                        save_ckpt = next(save_ckpts)
+
+
+        if (running_loss/(batch_idx+1)) <= args.loss_threshold:
+
+            output = {
+                'init': model0.state_dict(),
+                'best': best,
+                'model': copy.deepcopy(model.state_dict()),
+                'dynamics': dynamics,
+                'step': step
+            }
+            with open(args.outname, "wb") as handle:
+                pickle.dump(args, handle)
+                pickle.dump(output, handle)
+            break
 
     return None
 
 torch.set_default_dtype(torch.float32)
 
-parser = argparse.ArgumentParser(description='Supervised Learning of the Random Hierarchy Model with deep neural networks')
+parser = argparse.ArgumentParser(description='Learning the Random Hierarchy Model with deep neural networks')
 parser.add_argument("--device", type=str, default='cuda')
 '''
 	DATASET ARGS
@@ -148,7 +160,7 @@ parser.add_argument("--seed_model", type=int, help='seed for model initializatio
 '''
 parser.add_argument('--lr', type=float, help='learning rate', default=0.1)
 parser.add_argument('--optim', type=str, default='sgd')
-parser.add_argument('--accumulation', default=False, action='store_true')
+parser.add_argument('--accumulation', type=int, default=1)
 parser.add_argument('--momentum', type=float, default=0.9)
 parser.add_argument('--scheduler', type=str, default=None)
 parser.add_argument('--scheduler_time', type=int, default=None)
