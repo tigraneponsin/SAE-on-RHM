@@ -21,7 +21,6 @@ import pickle
 import datasets
 import models
 import init
-import training
 import measures
 
 def run( args):
@@ -34,6 +33,17 @@ def run( args):
     args.num_batches = args.train_size//args.batch_size
     args.max_iters = args.max_epochs*args.num_batches
 
+    if args.bonus:
+        assert args.test_size > 0, 'bonus measures require non empty test set!'
+        args.bonus = {}
+        if args.tree:
+            args.bonus['tree'] = None
+        if args.noise:
+            args.bonus['noise'] = None
+        if args.synonyms:
+            args.bonus['synonyms'] = None
+    args.bonus['size'] = args.test_size
+
     train_loader, test_loader = init.init_data( args)
 
     model = init.init_model( args)
@@ -42,18 +52,25 @@ def run( args):
     if args.scheduler_time is None:
         args.scheduler_time = args.max_iters
     criterion, optimizer, scheduler = init.init_training( model, args)
-
-    dynamics, best = init.init_output( model, criterion, train_loader, test_loader, args)
-    if args.print_freq >= 10:
-        print_ckpts = init.init_loglinckpt( args.print_freq, args.max_iters, fill=True)
-    else:
-        print_ckpts = init.init_loglinckpt( args.print_freq, args.max_iters, fill=False)
-    save_ckpts = init.init_loglinckpt( args.save_freq, args.max_iters, fill=False)
+ 
+    print_ckpts = init.init_loglinckpt( args.print_freq, args.max_iters, fill=True, freq=args.save_freq)
+    save_ckpts = init.init_log2ckpt( args.max_iters, args.save_freq)
     print_ckpt = next(print_ckpts)
     save_ckpt = next(save_ckpts)
 
     start_time = time.time()
     step = 0
+    dynamics, best = init.init_output( model, criterion, train_loader, test_loader, args)
+    if args.checkpoints:
+
+        output = {
+            'model': copy.deepcopy(model.state_dict()),
+            'state': dynamics[-1],
+            'step': step
+        }
+        with open(args.outname+f'_t{0}', "wb") as handle:
+            pickle.dump(args, handle)
+            pickle.dump(output, handle)
 
     for epoch in range(args.max_epochs):
 
@@ -82,41 +99,76 @@ def run( args):
                     if test_loss<best['loss']: # update best model if loss is smaller
                         best['step'] = step
                         best['loss'] = test_loss
-                        best['acc'] = test_acc
                         best['model'] = copy.deepcopy( model.state_dict())
 
-                    dynamics.append({'t': step, 'trainloss': running_loss/(batch_idx+1), 'testloss': test_loss, 'testacc': test_acc})
-                    print('step : ',step, '\t train loss: {:06.4f}'.format(running_loss/(batch_idx+1)), ',test loss: {:06.4f}'.format(test_loss), ', test acc.: {:04.2f}'.format(test_acc))
+                    print('step : ',step, '\t train loss: {:06.4f}'.format(running_loss/(batch_idx+1)), ',test loss: {:06.4f}'.format(test_loss))
                     print_ckpt = next(print_ckpts)
 
-                    if step==save_ckpt:
+                    if step>=save_ckpt:
 
                         print(f'Checkpoint at step {step}, saving data ...')
-                        output = {
-                            'init': model0.state_dict(),
-                            'best': best,
-                            'model': copy.deepcopy(model.state_dict()),
-                            'dynamics': dynamics,
-                            'step': step
-                        }
-                        with open(args.outname, "wb") as handle:
-                            pickle.dump(args, handle)
-                            pickle.dump(output, handle)
+
+                        train_loss, train_acc = measures.test(model, train_loader)
+                        save_dict = {'t': step, 'trainloss': train_loss, 'trainacc': train_acc, 'testloss': test_loss, 'testacc': test_acc}
+                        if args.bonus:
+                            if 'synonyms' in args.bonus:
+                                save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'])
+                            if 'noise' in args.bonus:
+                                save_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'])
+                        dynamics.append(save_dict)
+
+                        if args.checkpoints:
+                            output = {
+                                'model': copy.deepcopy(model.state_dict()),
+                                'state': dynamics[-1],
+                                'step': step
+                            }
+                            with open(args.outname+f'_t{step}', "wb") as handle:
+                                pickle.dump(output, handle)
+                        else:
+                            output = {
+                                'init': model0.state_dict(),
+                                'best': best,
+                                'model': copy.deepcopy(model.state_dict()),
+                                'dynamics': dynamics,
+                                'step': step
+                            }
+                            with open(args.outname, "wb") as handle:
+                                pickle.dump(args, handle)
+                                pickle.dump(output, handle)
                         save_ckpt = next(save_ckpts)
 
 
         if (running_loss/(batch_idx+1)) <= args.loss_threshold:
 
-            output = {
-                'init': model0.state_dict(),
-                'best': best,
-                'model': copy.deepcopy(model.state_dict()),
-                'dynamics': dynamics,
-                'step': step
-            }
-            with open(args.outname, "wb") as handle:
-                pickle.dump(args, handle)
-                pickle.dump(output, handle)
+            train_loss, train_acc = measures.test(model, train_loader)
+            save_dict = {'t': step, 'trainloss': train_loss, 'trainacc': train_acc, 'testloss': test_loss, 'testacc': test_acc}
+            if args.bonus:
+                if 'synonyms' in args.bonus:
+                    save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'])
+                if 'noise' in args.bonus:
+                    save_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'])
+            dynamics.append(save_dict)
+
+            if args.checkpoints:
+                output = {
+                    'model': copy.deepcopy(model.state_dict()),
+                    'state': dynamics[-1],
+                    'step': step
+                }
+                with open(args.outname+f'_t{step}', "wb") as handle:
+                    pickle.dump(output, handle)
+            else:
+                output = {
+                    'init': model0.state_dict(),
+                    'best': best,
+                    'model': copy.deepcopy(model.state_dict()),
+                    'dynamics': dynamics,
+                    'step': step
+                }
+                with open(args.outname, "wb") as handle:
+                    pickle.dump(args, handle)
+                    pickle.dump(output, handle)
             break
 
     return None
@@ -147,12 +199,12 @@ parser.add_argument('--whitening', type=int, default=0)
 '''
 	ARCHITECTURE ARGS
 '''
-parser.add_argument('--model', type=str, help='architecture (fcn and hcnn implemented)')
+parser.add_argument('--model', type=str, help='architecture (fcn, hcnn, hlcn, transformer_mla)')
 parser.add_argument('--depth', type=int, help='depth of the network')
 parser.add_argument('--width', type=int, help='width of the network')
-parser.add_argument("--filter_size", type=int, default=None)
-parser.add_argument('--num_heads', type=int, help='number of heads (transformer only)')
-parser.add_argument('--embedding_dim', type=int, help='embedding dimension (transformer only)')
+parser.add_argument("--filter_size", type=int, help='number of heads (CNN only)', default=None)
+parser.add_argument('--num_heads', type=int, help='number of heads (transformer only)', default=None)
+parser.add_argument('--embedding_dim', type=int, help='embedding dimension (transformer only)', default=None)
 parser.add_argument('--bias', default=False, action='store_true')
 parser.add_argument("--seed_model", type=int, help='seed for model initialization')
 '''
@@ -168,8 +220,13 @@ parser.add_argument('--max_epochs', type=int, default=100)
 '''
 	OUTPUT ARGS
 '''
-parser.add_argument('--print_freq', type=int, help='frequency of prints', default=10)
-parser.add_argument('--save_freq', type=int, help='frequency of saves', default=10)
+parser.add_argument('--print_freq', type=int, help='frequency of prints', default=16)
+parser.add_argument('--save_freq', type=int, help='frequency of saves', default=2)
+parser.add_argument('--bonus', default=False, action='store_true')
+parser.add_argument('--noise', default=False, action='store_true')
+parser.add_argument('--synonyms', default=False, action='store_true')
+parser.add_argument('--tree', default=False, action='store_true')
+parser.add_argument('--checkpoints', default=False, action='store_true')
 parser.add_argument('--loss_threshold', type=float, default=1e-3)
 parser.add_argument('--outname', type=str, required=True, help='path of the output file')
 

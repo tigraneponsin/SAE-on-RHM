@@ -50,7 +50,8 @@ def init_data(args):
             seed_sample=args.seed_sample,
             input_format=args.input_format,
             whitening=args.whitening,		# 1 for standardising input
-            replacement=args.replacement	# Automatically true for num_data > 1e19
+            replacement=args.replacement,	# Automatically true for num_data > 1e19
+            bonus=args.bonus			# bonus dictionary
         )
 
         args.input_size = args.tuple_size**args.num_layers
@@ -67,20 +68,62 @@ def init_data(args):
         if 'fcn' in args.model:	# for fcn remove masked token from the input
             dataset.features = dataset.features[:,:,:-1]
             args.num_tokens -= 1
+            if args.bonus:
+                if 'synonyms' in args.bonus:
+                    for k in args.bonus['synonyms'].keys():
+                        args.bonus['synonyms'][k] = args.bonus['synonyms'][k][:,:,:-1]
+                if 'noise' in args.bonus:
+                    for k in args.bonus['noise'].keys():
+                        args.bonus['noise'][k] = args.bonus['noise'][k][:,:,:-1]
+
 
         else:				# for other models replace masked token with ones
             mask = torch.ones(args.num_features)*args.num_features**-.5
             mask = torch.tile( mask, [args.train_size+args.test_size, 1])
             dataset.features[:,:,-1] = mask
+            if args.bonus:
+                if 'synonyms' in args.bonus:
+                    for k in args.bonus['synonyms'].keys():
+                        args.bonus['synonyms'][k][:,:,-1] = mask[-args.bonus['size']:]
+                if 'noise' in args.bonus:
+                    for k in args.bonus['noise'].keys():
+                        args.bonus['noise'][k][:,:,-1] = mask[-args.bonus['size']:]
 
     if 'fcn' in args.model:		# fcn requires flattening of the input
         dataset.features = dataset.features.transpose(1,2).flatten( start_dim=1) # groups of adjacent num_features correspond to a pixel
+        if args.bonus:
+            if 'synonyms' in args.bonus:
+                for k in args.bonus['synonyms'].keys():
+                    args.bonus['synonyms'][k] = args.bonus['synonyms'][k].transpose(1,2).flatten( start_dim=1)
+            if 'noise' in args.bonus:
+                for k in args.bonus['noise'].keys():
+                    args.bonus['noise'][k] = args.bonus['noise'][k].transpose(1,2).flatten( start_dim=1)
+
 
     if 'transformer' in args.model:	# transformer requires [batch_size, seq_len, num_channels] format
         dataset.features = dataset.features.transpose(1,2)
+        if args.bonus:
+            if 'synonyms' in args.bonus:
+                for k in args.bonus['synonyms'].keys():
+                    args.bonus['synonyms'][k] = args.bonus['synonyms'][k].transpose(1,2)
+            if 'noise' in args.bonus:
+                for k in args.bonus['noise'].keys():
+                    args.bonus['noise'][k] = args.bonus['noise'][k].transpose(1,2)
+
         # TODO: append classification token to input for transformers used in class
 
     dataset.features, dataset.labels = dataset.features.to(args.device), dataset.labels.to(args.device)	# move to device when using cuda
+    if args.bonus:
+        if 'synonyms' in args.bonus:
+            for k in args.bonus['synonyms'].keys():
+                args.bonus['synonyms'][k] = args.bonus['synonyms'][k].to(args.device)
+        if 'noise' in args.bonus:
+            for k in args.bonus['noise'].keys():
+                args.bonus['noise'][k] = args.bonus['noise'][k].to(args.device)
+
+    if args.bonus:
+        args.bonus['features'] = dataset.features[-args.bonus['size']:]
+        args.bonus['labels'] = dataset.labels[-args.bonus['size']:]
 
     trainset = torch.utils.data.Subset(dataset, range(args.train_size))
     train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=0)
@@ -223,32 +266,64 @@ def init_output( model, criterion, train_loader, test_loader, args):
     trainloss, trainacc = measures.test(model, train_loader)
     testloss, testacc = measures.test(model, test_loader)
     
-    dynamics = [{'t': 0, 'trainloss': trainloss, 'testloss': testloss, 'testacc': testacc}] # add additional observables here
-    best = {'step':0, 'model': None, 'loss': testloss, 'acc': testacc}
+    print_dict = {'t': 0, 'trainloss': trainloss, 'trainacc': trainacc, 'testloss': testloss, 'testacc': testacc}
+    if args.bonus:
+        if 'synonyms' in args.bonus:
+            print_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'])
+        if 'noise' in args.bonus:
+            print_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'])
+    dynamics = [print_dict]
+
+    best = {'step':0, 'model': None, 'loss': testloss}
 
     return dynamics, best
 
-def init_loglinckpt( step, end, fill=False):
+def init_loglinckpt( step, end, fill=False, freq=0):
     """
     Initialise checkpoint iterator.
 
     Returns:
-        Iterator with i*step until end. fill=True fills the first step with up to 10 logarithmically spaced points.
+        Iterator with i*step until end. fill=True fills the first step like log2ckpt
     """
-    current = step
-    checkpoints = []
-
     if fill:
-        space = step ** (1./10)
-        start = 1.
-        for i in range(9):
-            start *= space
-            if int(start) not in checkpoints:
-                checkpoints.append( int( start))
+        
+        current = 1.
+        checkpoints = []
 
+        while current < 2*freq:
+            checkpoints.append( int( current))
+            current *= 2
+
+        while current < step:
+            checkpoints.append( int( current))
+            current *= 2**(1./freq)
+
+    current = step
     while current <= end:
         checkpoints.append(current)
         current += step
+    checkpoints.append(0)
+
+    return iter(checkpoints)
+
+def init_log2ckpt( end, freq):
+    """
+    Initialise checkpoint iterator.
+
+    Returns:
+        Iterator with steps spaced multiplicatively by 2**(1/freq) until end.
+    """
+    current = 1.
+    checkpoints = []
+
+    while current < 2*freq:
+        checkpoints.append( int( current))
+        current *= 2
+
+    while current < end:
+        checkpoints.append( int( current))
+        current *= 2**(1./freq)
+    checkpoints.append( int( end))
     checkpoints.append(0)
 
     return iter(checkpoints)
