@@ -35,3 +35,22 @@ def dec2base(n, b, length=None):
         assert len(digits) <= length, "Length required is too small to represent input numbers!"
         digits += [torch.zeros(len(n), dtype=int)] * (length - len(digits))
     return torch.stack(digits[::-1]).t()
+
+def base2dec(t, b):
+    """
+    Convert tuples of s integers in base b into integers in base b**s.
+    
+    Args:
+            t: tuples to convert (tesor of size [*,s]).
+            b: the base (integer).
+    
+    Returns:
+        A tensor (size [*]) with the inputs in the new base
+    """
+    length = t.size(-1)  # Length of the tuples, which gives the number of digits    
+    # Create powers of b: [b**(length-1), b**(length-2), ..., b**0]
+    powers = torch.tensor([b ** i for i in reversed(range(length))], dtype=t.dtype, device=t.device)
+    # Multiply the tensor by the powers of b and sum along the last dimension
+    result = torch.sum(t * powers, dim=-1)
+    
+    return result

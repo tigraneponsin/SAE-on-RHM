@@ -14,7 +14,7 @@ def whiten(tensor, eps):	# subtract meand and divide by std along the batch dime
     return (wtensor-wtensor.mean(dim=0,keepdim=True))/(eps+wtensor.std(dim=0,keepdim=True))
 
 
-def test( model, dataloader):
+def test( model, dataloader, device):
     """
     Test the model on data from dataloader.
     
@@ -29,6 +29,7 @@ def test( model, dataloader):
     
     with torch.no_grad():
         for inputs, targets in dataloader:
+            inputs, targets = inputs.to(device), targets.to(device)
 
             outputs = model(inputs)
             _, predictions = outputs.max(1)
@@ -40,7 +41,7 @@ def test( model, dataloader):
     return loss / total, 1.0 * correct / total
 
 
-def sensitivity( model, data, transformed):
+def sensitivity( model, data, transformed, device):
     """
     Compute the cosine similarity of the model activations when acting on original and transformed data.
 
@@ -52,6 +53,8 @@ def sensitivity( model, data, transformed):
     Returns:
         Dictionary with model.num_layers+1 entries (one per hidden layer plus one for the output).
     """
+    model.eval()
+
     eps = 1e-8
     result = {}
     B,T,C = data.size()
@@ -60,18 +63,20 @@ def sensitivity( model, data, transformed):
     with torch.no_grad():
 
         act_o = torch.clone(data)	# original activations
-        act_t = {}			# transformed activations
+        act_o = act_o.to(device)
+        act_t = {}                  # transformed activations
         for k in transformed.keys():
             act_t[k] = torch.clone(transformed[k])
+            act_t[k] = act_t[k].to(device)
 
         if hasattr(model, 'token_embedding'):
             act_o = F.linear( act_o, model.token_embedding, bias=None) *C**-.5
             for k in transformed.keys():
                 act_t[k] = F.linear( act_t[k], model.token_embedding, bias=None) *C**-.5
             if hasattr(model, 'position_embedding'):
-                act_o += model.position_embedding(torch.arange(T, device=data.device))
+                act_o += model.position_embedding(torch.arange(T, device=device))
                 for k in transformed.keys():
-                    act_t[k] += model.position_embedding(torch.arange(T, device=data.device))
+                    act_t[k] += model.position_embedding(torch.arange(T, device=device))
 
         for l in range(model.num_layers):
 
@@ -90,7 +95,7 @@ def sensitivity( model, data, transformed):
         result[l+1] = {}
         for k in transformed.keys():
 
-            x_t = whiten(model(transformed[k]), eps)
+            x_t = whiten(model(transformed[k].to(device)), eps)
             sensitivity = F.cosine_similarity(x, x_t, dim=1)
             result[l+1][k] = sensitivity.mean(dim=0)
 

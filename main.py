@@ -36,13 +36,13 @@ def run( args):
     if args.bonus:
         assert args.test_size > 0, 'bonus measures require non empty test set!'
         args.bonus = {}
+        args.bonus['size'] = args.test_size
         if args.tree:
             args.bonus['tree'] = None
         if args.noise:
             args.bonus['noise'] = None
         if args.synonyms:
             args.bonus['synonyms'] = None
-    args.bonus['size'] = args.test_size
 
     train_loader, test_loader = init.init_data( args)
 
@@ -80,8 +80,8 @@ def run( args):
 
         for batch_idx, (inputs, targets) in enumerate(train_loader):
 
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
+            outputs = model(inputs.to(args.device))
+            loss = criterion(outputs, targets.to(args.device))
             running_loss += loss.item()
             loss /= args.accumulation
             loss.backward()
@@ -94,7 +94,7 @@ def run( args):
 
                 if step==print_ckpt:
 
-                    test_loss, test_acc = measures.test(model, test_loader)
+                    test_loss, test_acc = measures.test(model, test_loader, args.device)
 
                     if test_loss<best['loss']: # update best model if loss is smaller
                         best['step'] = step
@@ -108,13 +108,13 @@ def run( args):
 
                         print(f'Checkpoint at step {step}, saving data ...')
 
-                        train_loss, train_acc = measures.test(model, train_loader)
+                        train_loss, train_acc = measures.test(model, train_loader, args.device)
                         save_dict = {'t': step, 'trainloss': train_loss, 'trainacc': train_acc, 'testloss': test_loss, 'testacc': test_acc}
                         if args.bonus:
                             if 'synonyms' in args.bonus:
-                                save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'])
+                                save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'], args.device)
                             if 'noise' in args.bonus:
-                                save_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'])
+                                save_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'], args.device)
                         dynamics.append(save_dict)
 
                         if args.checkpoints:
@@ -141,13 +141,13 @@ def run( args):
 
         if (running_loss/(batch_idx+1)) <= args.loss_threshold:
 
-            train_loss, train_acc = measures.test(model, train_loader)
+            train_loss, train_acc = measures.test(model, train_loader, args.device)
             save_dict = {'t': step, 'trainloss': train_loss, 'trainacc': train_acc, 'testloss': test_loss, 'testacc': test_acc}
             if args.bonus:
                 if 'synonyms' in args.bonus:
-                    save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'])
+                    save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'], args.device)
                 if 'noise' in args.bonus:
-                    save_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'])
+                    save_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'], args.device)
             dynamics.append(save_dict)
 
             if args.checkpoints:
@@ -188,6 +188,8 @@ parser.add_argument('--num_synonyms', metavar='m', type=int, help='multiplicity 
 parser.add_argument('--tuple_size', metavar='s', type=int, help='size of low-level representations')
 parser.add_argument('--num_layers', metavar='L', type=int, help='number of layers')
 parser.add_argument("--seed_rules", type=int, help='seed for the dataset')
+parser.add_argument("--zipf", type=float, help='zipf law exponent', default=None)
+parser.add_argument("--layer", type=int, help='layer of the zipf law', default=None)
 parser.add_argument("--num_tokens", type=int, help='number of input tokens (spatial size)')
 parser.add_argument('--train_size', metavar='Ptr', type=int, help='training set size')
 parser.add_argument('--batch_size', metavar='B', type=int, help='batch size')
@@ -213,7 +215,7 @@ parser.add_argument("--seed_model", type=int, help='seed for model initializatio
 parser.add_argument('--lr', type=float, help='learning rate', default=0.1)
 parser.add_argument('--optim', type=str, default='sgd')
 parser.add_argument('--accumulation', type=int, default=1)
-parser.add_argument('--momentum', type=float, default=0.9)
+parser.add_argument('--momentum', type=float, default=0.0)
 parser.add_argument('--scheduler', type=str, default=None)
 parser.add_argument('--scheduler_time', type=int, default=None)
 parser.add_argument('--max_epochs', type=int, default=100)

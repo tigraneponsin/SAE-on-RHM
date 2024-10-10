@@ -38,12 +38,25 @@ def init_data(args):
     """
     if args.dataset=='rhm':
 
+        probability = None
+
+        if args.zipf is not None:
+            assert args.layer is not None, "zipf law requires layer of application"
+            probability = {}
+            for l in range(args.num_layers):
+                probability[l] = torch.ones(args.num_synonyms)/args.num_synonyms
+            zipf_prob = torch.ones(args.num_synonyms)
+            for i in range(args.num_synonyms):
+                zipf_prob[i] = (i+1)**(-1-args.zipf)
+            probability[args.layer] = zipf_prob/zipf_prob.sum()
+
         dataset = datasets.RandomHierarchyModel(
             num_features=args.num_features,	# vocabulary size
             num_synonyms=args.num_synonyms,	# features multiplicity
             num_layers=args.num_layers,		# number of layers
             num_classes=args.num_classes,	# number of classes
             tuple_size=args.tuple_size,		# number of branches of the tree
+            probability=probability,
             seed_rules=args.seed_rules,
             train_size=args.train_size,
             test_size=args.test_size,
@@ -112,7 +125,6 @@ def init_data(args):
 
         # TODO: append classification token to input for transformers used in class
 
-    dataset.features, dataset.labels = dataset.features.to(args.device), dataset.labels.to(args.device)	# move to device when using cuda
     if args.bonus:
         if 'synonyms' in args.bonus:
             for k in args.bonus['synonyms'].keys():
@@ -263,15 +275,15 @@ def init_output( model, criterion, train_loader, test_loader, args):
         list with the dynamics, best model.
     """
 
-    trainloss, trainacc = measures.test(model, train_loader)
-    testloss, testacc = measures.test(model, test_loader)
+    trainloss, trainacc = measures.test(model, train_loader, args.device)
+    testloss, testacc = measures.test(model, test_loader, args.device)
     
     print_dict = {'t': 0, 'trainloss': trainloss, 'trainacc': trainacc, 'testloss': testloss, 'testacc': testacc}
     if args.bonus:
         if 'synonyms' in args.bonus:
-            print_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'])
+            print_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'], args.device)
         if 'noise' in args.bonus:
-            print_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'])
+            print_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'], args.device)
     dynamics = [print_dict]
 
     best = {'step':0, 'model': None, 'loss': testloss}
