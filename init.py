@@ -290,52 +290,60 @@ def init_output( model, criterion, train_loader, test_loader, args):
 
     return dynamics, best
 
-def init_loglinckpt( step, end, fill=False, freq=0):
+def log2ckpt( end, freq):
     """
-    Initialise checkpoint iterator.
+    Initialise log-spaced iterator.
 
     Returns:
-        Iterator with i*step until end. fill=True fills the first step like log2ckpt
-    """
-    if fill:
-        
-        current = 1.
-        checkpoints = []
-
-        while current < 2*freq:
-            checkpoints.append( int( current))
-            current *= 2
-
-        while current < step:
-            checkpoints.append( int( current))
-            current *= 2**(1./freq)
-
-    current = step
-    while current <= end:
-        checkpoints.append(current)
-        current += step
-    checkpoints.append(0)
-
-    return iter(checkpoints)
-
-def init_log2ckpt( end, freq):
-    """
-    Initialise checkpoint iterator.
-
-    Returns:
-        Iterator with steps spaced multiplicatively by 2**(1/freq) until end.
+        List with integer steps spaced multiplicatively by 2**(1/freq) until end.
     """
     current = 1.
+    factor = 2**(1./freq)
+    threshold = 2**(math.ceil(math.log(1./(factor-1)))+1)
     checkpoints = []
 
-    while current < 2*freq:
-        checkpoints.append( int( current))
-        current *= 2
+    while current < threshold:
+        checkpoints.append( round( current))
+        current += 1
 
-    while current < end:
-        checkpoints.append( int( current))
-        current *= 2**(1./freq)
-    checkpoints.append( int( end))
-    checkpoints.append(0)
+    while round(current) < end:
+        checkpoints.append( round( current))
+        current *= factor
 
-    return iter(checkpoints)
+    checkpoints.append( round( end))
+
+    return checkpoints
+
+def init_loglinckpt( step, end, freq):
+    """
+    Initialise checkpoint iterator.
+
+    Returns:
+        Two iterators, one for linear and one for logscale. The iterators coincide upt to some multiple of step, 
+        then one proceeds linearly in multiples of step and the other logarithmically in factors of 2**(1/freq).
+    """
+    # find the correct multiplier
+    factor = 2**(1./freq)
+    multiplier = 2**(math.ceil(math.log(1./(factor-1)))+1)
+
+    # build log2ckpt lists until multiplier*step
+    lin_ckpts = log2ckpt( multiplier*step, freq)
+    log_ckpts = lin_ckpts.copy()
+
+    # fill the linear list by adding steps until end
+    current = lin_ckpts[-1] + step
+    while current <= end:
+        lin_ckpts.append(current)
+        current += step
+    lin_ckpts.append(0)
+
+    # fill the log list by multiplying factors until end
+    current = multiplier*factor
+    while round(current)*step < end:
+        log_ckpts.append( round(current)*step)
+        current *= factor
+
+    log_ckpts.append(round( end))
+    log_ckpts.append(0)
+
+    return iter(lin_ckpts), iter(log_ckpts)

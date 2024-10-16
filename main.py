@@ -53,10 +53,8 @@ def run( args):
         args.scheduler_time = args.max_iters
     criterion, optimizer, scheduler = init.init_training( model, args)
  
-    print_ckpts = init.init_loglinckpt( args.print_freq, args.max_iters, fill=True, freq=args.save_freq)
+    print_ckpts, save_ckpts = init.init_loglinckpt( args.print_freq, args.max_iters, freq=args.save_freq)
     save_ckpts = init.init_log2ckpt( args.max_iters, args.save_freq)
-    print_ckpt = next(print_ckpts)
-    save_ckpt = next(save_ckpts)
 
     start_time = time.time()
     step = 0
