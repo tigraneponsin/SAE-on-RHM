@@ -46,13 +46,13 @@ def init_data(args):
             for l in range(args.num_layers):
                 probability[l] = torch.ones(args.num_synonyms)/args.num_synonyms
             zipf_prob = torch.zeros(args.num_synonyms)
-            if args.zipf==float('inf'):
+            if args.zipf=='inf':
                 zipf_prob[0] = 1.
-                probability[args.layer] = zipf_prob
+                probability[args.layer-1] = zipf_prob
             else:
                 for i in range(args.num_synonyms):
-                    zipf_prob[i] = (i+1)**(-1-args.zipf)
-                probability[args.layer] = zipf_prob/zipf_prob.sum()
+                    zipf_prob[i] = (i+1)**(-1-float(args.zipf))
+                probability[args.layer-1] = zipf_prob/zipf_prob.sum()
 
         dataset = datasets.RandomHierarchyModel(
             num_features=args.num_features,	# vocabulary size

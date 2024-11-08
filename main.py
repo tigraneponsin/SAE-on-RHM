@@ -54,7 +54,8 @@ def run( args):
     criterion, optimizer, scheduler = init.init_training( model, args)
  
     print_ckpts, save_ckpts = init.init_loglinckpt( args.print_freq, args.max_iters, freq=args.save_freq)
-    save_ckpts = init.init_log2ckpt( args.max_iters, args.save_freq)
+    print_ckpt = next(print_ckpts)
+    save_ckpt = next(save_ckpts)
 
     start_time = time.time()
     step = 0
@@ -186,7 +187,7 @@ parser.add_argument('--num_synonyms', metavar='m', type=int, help='multiplicity 
 parser.add_argument('--tuple_size', metavar='s', type=int, help='size of low-level representations')
 parser.add_argument('--num_layers', metavar='L', type=int, help='number of layers')
 parser.add_argument("--seed_rules", type=int, help='seed for the dataset')
-parser.add_argument("--zipf", type=float, help='zipf law exponent', default=None)
+parser.add_argument("--zipf", type=str, help='zipf law exponent', default=None)
 parser.add_argument("--layer", type=int, help='layer of the zipf law', default=None)
 parser.add_argument("--num_tokens", type=int, help='number of input tokens (spatial size)')
 parser.add_argument('--train_size', metavar='Ptr', type=int, help='training set size')
