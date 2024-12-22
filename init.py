@@ -130,6 +130,8 @@ def init_data(args):
         # TODO: append classification token to input for transformers used in class
 
     if args.bonus:
+        if 'rules' in args.bonus:
+            args.bonus['rules'] = dataset.rules
         if 'synonyms' in args.bonus:
             for k in args.bonus['synonyms'].keys():
                 args.bonus['synonyms'][k] = args.bonus['synonyms'][k].to(args.device)
