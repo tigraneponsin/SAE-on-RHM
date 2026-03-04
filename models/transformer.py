@@ -1,5 +1,5 @@
 import torch
-import torch.nn as nn
+import torch.nn as nn 
 import torch.nn.functional as F
 
 from .fcn import MLP
@@ -269,3 +269,86 @@ class CLM(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (bs, seq_len+1)
 
         return idx
+
+
+class ClassificationTransformer(nn.Module):
+    """
+    Encoder-only Transformer for classification tasks.
+    A learnable [CLS] token is prepended to the input sequence and propagated
+    through all layers. The final representation of the [CLS] token is used
+    for classification.
+    
+    Args:
+        vocab_size: The size of the vocabulary (number of token classes).
+        block_size: The (maximal) number of input tokens (excluding [CLS]).
+        embedding_dim: The embedding dimension.
+        num_heads: The number of attention heads.
+        ffwd_size: Size of the MLP is ffwd_size*embedding_dim.
+        num_layers: The number of transformer blocks.
+        num_classes: The number of output classes.
+        dropout: The fraction of weights to zero via dropout.
+    """
+    def __init__(
+        self, vocab_size, block_size, embedding_dim, num_heads, ffwd_size, num_layers,
+        num_classes, dropout=0
+    ):
+        super().__init__()
+
+        self.block_size = block_size
+        self.embedding_dim = embedding_dim
+        self.num_heads = num_heads
+        self.ffwd_size = ffwd_size
+        self.num_layers = num_layers
+        self.num_classes = num_classes
+
+        self.token_embedding_table = nn.Embedding(vocab_size, self.embedding_dim)
+        # +1 to account for the prepended [CLS] token position
+        self.position_embedding_table = nn.Embedding(self.block_size + 1, self.embedding_dim)
+
+        # Learnable [CLS] token embedding
+        self.cls_token = nn.Parameter(torch.randn(1, 1, self.embedding_dim))
+
+        self.blocks = nn.Sequential(
+            *[
+                DecoderBlock(
+                    embedding_dim=self.embedding_dim,
+                    input_size=self.block_size + 1,  # +1 for [CLS]
+                    num_heads=self.num_heads,
+                    ffwd_size=self.ffwd_size,
+                    decoder=False,
+                    dropout=dropout
+                ) for _ in range(self.num_layers)
+            ]
+        )
+        self.ln_f = nn.LayerNorm(self.embedding_dim)
+        self.classifier = nn.Linear(self.embedding_dim, self.num_classes)
+
+    def forward(self, idx):
+        """
+        Args:
+            idx: input token indices, tensor of size (batch_size, seq_len).
+        
+        Returns:
+            Logits of size (batch_size, num_classes).
+        """
+        B, T = idx.size()
+
+        token_emb = self.token_embedding_table(idx)  # [bs, seq_len, embedding_dim]
+
+        # Prepend [CLS] token
+        cls_tokens = self.cls_token.expand(B, -1, -1)  # [bs, 1, embedding_dim]
+        x = torch.cat([cls_tokens, token_emb], dim=1)  # [bs, 1 + seq_len, embedding_dim]
+
+        # Positional embeddings for [CLS] + sequence
+        pos_emb = self.position_embedding_table(torch.arange(T + 1, device=idx.device))  # [1 + seq_len, embedding_dim]
+        x = x + pos_emb  # [bs, 1 + seq_len, embedding_dim]
+
+        x = self.blocks(x)  # [bs, 1 + seq_len, embedding_dim]
+        x = self.ln_f(x)    # [bs, 1 + seq_len, embedding_dim]
+
+        # Read out from the [CLS] token (position 0)
+        cls_out = x[:, 0, :]  # [bs, embedding_dim]
+
+        logits = self.classifier(cls_out)  # [bs, num_classes]
+
+        return logits

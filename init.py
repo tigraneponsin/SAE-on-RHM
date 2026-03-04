@@ -219,6 +219,21 @@ def init_model(args):
                 dropout=args.dropout,
                 share_emb=False,
             )
+        
+        elif args.model == 'transformer_class':
+
+            if args.ffwd_size is None:
+                args.ffwd_size = 4
+            model = models.ClassificationTransformer(
+                vocab_size=args.num_features,
+                block_size=args.num_tokens,
+                embedding_dim=args.embedding_dim,
+                num_heads=args.num_heads,
+                ffwd_size=args.ffwd_size,
+                num_layers=args.depth,
+                num_classes=args.num_classes,
+                dropout=args.dropout,
+            )
 
     else:
         raise ValueError('model argument is invalid!')
