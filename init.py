@@ -234,6 +234,9 @@ def init_model(args):
                 num_classes=args.num_classes,
                 dropout=args.dropout,
             )
+        
+        else:
+            raise ValueError(f'Unknown transformer model: {args.model}. Expected one of: transformer_mla, transformer_clm, transformer_class')
 
     else:
         raise ValueError('model argument is invalid!')

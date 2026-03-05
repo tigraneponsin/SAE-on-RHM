@@ -9,6 +9,7 @@
 #SBATCH --time 10:00:00
 #SBATCH --mem 90G
 #SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:1
 #SBATCH --account pcsl
 #SBATCH --array=0-4%5
 
@@ -71,9 +72,10 @@ mkdir -p "$RESULTS_DIR"
 
 exec > "${RESULTS_DIR}/${OUTNAME%.pkl}.out" 2> "${RESULTS_DIR}/${OUTNAME%.pkl}.err"
 
-path="${SLURM_JOB_NAME}_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-mkdir -p "$path"
-cd "$path" || exit 1
+# Use temporary directory for job workspace
+TMPDIR="/tmp/job_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+mkdir -p "$TMPDIR"
+cd "$TMPDIR" || exit 1
 
 echo STARTING AT
 date
@@ -113,4 +115,8 @@ srun python /home/ponsin/random-hierarchy-model/main.py \
     --outname "$OUTNAME"
 
 echo FINISHED AT
+date
+
+# Cleanup temporary directory
+rm -rf "$TMPDIR"
 date
