@@ -2,8 +2,8 @@
 
 #SBATCH --job-name test_rhm_trfclass
 #SBATCH --chdir /home/ponsin
-#SBATCH -o /home/ponsin/results_scale_law_trfclass/%x_%A_%a.out
-#SBATCH -e /home/ponsin/results_scale_law_trfclass/%x_%A_%a.err
+#SBATCH -o /dev/null
+#SBATCH -e /dev/null
 
 #SBATCH --partition h100
 #SBATCH --time 10:00:00
@@ -66,16 +66,14 @@ LOSS_THRESHOLD=0.001
 
 OUTNAME="RESULT_TRFCLASS_v_${NUM_CLASSES}_L_${NUM_LAYERS}_P_${TRAIN_SIZE}_${SLURM_ARRAY_TASK_ID}_emb_${EMBEDDING_DIM}_h_${NUM_HEADS}_lr_${LEARNING_RATE}.pkl"
 
-RESULTS_DIR="/home/ponsin/results_scale_law_trfclass"
+RESULTS_DIR="/work/pcsl/ponsin/results_scale_law_trfclass/v_${NUM_FEATURES}_L_${NUM_LAYERS}"
 
 mkdir -p "$RESULTS_DIR"
 
 exec > "${RESULTS_DIR}/${OUTNAME%.pkl}.out" 2> "${RESULTS_DIR}/${OUTNAME%.pkl}.err"
 
-# Use temporary directory for job workspace
-TMPDIR="/tmp/job_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-mkdir -p "$TMPDIR"
-cd "$TMPDIR" || exit 1
+# Work directly in results directory
+cd "$RESULTS_DIR" || exit 1
 
 echo STARTING AT
 date
@@ -115,8 +113,4 @@ srun python /home/ponsin/SAE-on-RHM/main.py \
     --outname "$OUTNAME"
 
 echo FINISHED AT
-date
-
-# Cleanup temporary directory
-rm -rf "$TMPDIR"
 date
