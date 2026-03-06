@@ -236,14 +236,22 @@ def run( config):
                                 f"{config.outname}_t{step}.pt"
                             )
                         else:
-                            output = {
-                                'rules': rhm.rules,
-                                'init': model0.state_dict(),
-                                'best': best,
-                                'model': copy.deepcopy(model.state_dict()),
-                                'dynamics': dynamics,
-                                'step': step
-                            }
+                            if config.save_models:
+                                output = {
+                                    'rules': rhm.rules,
+                                    'init': model0.state_dict(),
+                                    'best': best,
+                                    'model': copy.deepcopy(model.state_dict()),
+                                    'dynamics': dynamics,
+                                    'step': step
+                                }
+                            else:
+                                output = {
+                                    'dynamics': dynamics,
+                                    'step': step,
+                                    'best_step': best['step'],
+                                    'best_loss': best['loss']
+                                }
                             torch.save(
                                 {'config': config, 'output': output},
                                 f"{config.outname}.pt"
@@ -271,14 +279,22 @@ def run( config):
                     f"{config.outname}_t{step}.pt"
                 )
             else:
-                output = {
-                    'rules': rhm.rules,
-                    'init': model0.state_dict(),
-                    'best': best,
-                    'model': copy.deepcopy(model.state_dict()),
-                    'dynamics': dynamics,
-                    'step': step
-                }
+                if config.save_models:
+                    output = {
+                        'rules': rhm.rules,
+                        'init': model0.state_dict(),
+                        'best': best,
+                        'model': copy.deepcopy(model.state_dict()),
+                        'dynamics': dynamics,
+                        'step': step
+                    }
+                else:
+                    output = {
+                        'dynamics': dynamics,
+                        'step': step,
+                        'best_step': best['step'],
+                        'best_loss': best['loss']
+                    }
                 torch.save(
                     {'config': config, 'output': output},
                     f"{config.outname}.pt"
@@ -363,6 +379,7 @@ parser.add_argument('--measure_train', default=False, action='store_true')
 parser.add_argument('--checkpoints', default=False, action='store_true')
 parser.add_argument('--loss_threshold', type=float, default=1e-3)
 parser.add_argument('--outname', type=str, required=True, help='path of the output file')
+parser.add_argument('--save_models', default=False, action='store_true', help='save model weights (increases file size)')
 
 config = parser.parse_args()
 run( config)
