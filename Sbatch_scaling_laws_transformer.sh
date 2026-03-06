@@ -80,7 +80,7 @@ cd "$TMPDIR" || exit 1
 echo STARTING AT
 date
 
-srun python /home/ponsin/random-hierarchy-model/main.py \
+srun python /home/ponsin/SAE-on-RHM/main.py \
     --device "$DEVICE" \
     --mode "$MODE" \
     --num_features "$NUM_FEATURES" \
