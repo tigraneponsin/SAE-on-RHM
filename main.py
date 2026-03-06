@@ -2,6 +2,9 @@ import os
 import sys
 import time
 import copy
+
+# Ensure root SAE-on-RHM init.py is imported, not from other sources
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.append('~/rhm-training')
 
 import torch
@@ -335,7 +338,7 @@ parser.add_argument('--seed_model', type=int, help='seed for model initializatio
 parser.add_argument('--sae_enable', default=False, action='store_true')
 parser.add_argument('--sae_layers', type=str, default='all', help='comma-separated layer ids or all')
 parser.add_argument('--sae_latent_dim', type=int, default=None, help='latent width of SAE (default: 4 * embedding_dim)')
-parser.add_argument('--sae_lambda_l1', type=float, default=1e-3, help='L1 sparsity coefficient for SAE latent activations')
+parser.add_argument('--sae_lambda_l1', type=float, default=3, help='L1 sparsity coefficient for SAE latent activations')
 parser.add_argument('--sae_lr', type=float, default=1e-3, help='learning rate for SAE optimizer')
 parser.add_argument('--sae_steps', type=int, default=512, help='number of optimization steps for each SAE')
 parser.add_argument('--sae_batch_limit', type=int, default=0, help='max tokens per SAE step (0 uses all tokens in batch)')
