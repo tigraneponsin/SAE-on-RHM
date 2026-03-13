@@ -23,106 +23,7 @@ import argparse
 import datasets, models
 import init, measures
 
-
-def parse_sae_layers(sae_layers, num_layers):
-    if sae_layers is None or sae_layers.lower() == 'all':
-        return list(range(num_layers))
-
-    layers = [int(layer.strip()) for layer in sae_layers.split(',') if layer.strip()]
-    assert len(layers) > 0, 'sae_layers must contain at least one valid layer index'
-    for layer in layers:
-        assert 0 <= layer < num_layers, f'sae layer {layer} is out of range [0, {num_layers-1}]'
-    return sorted(set(layers))
-
-
-def train_sae_posthoc(model, train_loader, config):
-    assert config.model == 'transformer_class', 'post-hoc SAE is currently implemented for transformer_class only'
-    assert config.input_format == 'long', 'post-hoc SAE on transformer_class requires input_format=long'
-
-    model.eval()
-    for param in model.parameters():
-        param.requires_grad = False
-
-    layer_ids = parse_sae_layers(config.sae_layers, model.num_layers)
-    sae_state = {}
-    sae_metrics = {}
-
-    latent_dim = config.sae_latent_dim if config.sae_latent_dim is not None else 4 * model.embedding_dim
-    batch_limit = config.sae_batch_limit if config.sae_batch_limit > 0 else None
-    print_freq = max(config.sae_print_freq, 1)
-
-    for layer_id in layer_ids:
-        sae = models.SparseAutoencoder(
-            input_dim=model.embedding_dim,
-            latent_dim=latent_dim
-        ).to(config.device)
-        optimizer = optim.AdamW(sae.parameters(), lr=config.sae_lr, weight_decay=0.)
-
-        activation_buffer = []
-
-        def save_activation(_module, _inputs, output):
-            activation_buffer.append(output.detach())
-
-        hook = model.blocks[layer_id].register_forward_hook(save_activation)
-
-        step = 0
-        running_total = 0.
-        running_recon = 0.
-        running_sparse = 0.
-        last_z = None
-
-        while step < config.sae_steps:
-            for inputs, _ in train_loader:
-                with torch.no_grad():
-                    _ = model(inputs.to(config.device))
-
-                if not activation_buffer:
-                    continue
-
-                activation = activation_buffer.pop(0)
-                activation = activation.reshape(-1, activation.size(-1))
-
-                if batch_limit is not None and activation.size(0) > batch_limit:
-                    sample_ids = torch.randperm(activation.size(0), device=activation.device)[:batch_limit]
-                    activation = activation[sample_ids]
-
-                total_loss, recon_loss, sparse_loss = sae.loss(activation, lambda_l1=config.sae_lambda_l1)
-
-                optimizer.zero_grad()
-                total_loss.backward()
-                optimizer.step()
-
-                running_total += total_loss.item()
-                running_recon += recon_loss.item()
-                running_sparse += sparse_loss.item()
-                with torch.no_grad():
-                    _, last_z = sae(activation)
-
-                step += 1
-                if step % print_freq == 0 or step == config.sae_steps:
-                    print(
-                        f'sae layer {layer_id} step {step}/{config.sae_steps} '
-                        f'total={running_total/step:.6f} recon={running_recon/step:.6f} sparse={running_sparse/step:.6f}'
-                    )
-
-                if step >= config.sae_steps:
-                    break
-
-        hook.remove()
-
-        stats = sae.activation_stats(last_z) if last_z is not None else {'active_fraction': 0., 'dead_features': latent_dim}
-        sae_metrics[layer_id] = {
-            'total_loss': running_total / max(step, 1),
-            'recon_loss': running_recon / max(step, 1),
-            'sparse_loss': running_sparse / max(step, 1),
-            'active_fraction': stats['active_fraction'],
-            'dead_features': stats['dead_features'],
-            'steps': step,
-            'latent_dim': latent_dim
-        }
-        sae_state[layer_id] = copy.deepcopy(sae.state_dict())
-
-    return sae_state, sae_metrics
+torch.set_float32_matmul_precision('high')
 
 def run( config):
 
@@ -303,17 +204,8 @@ def run( config):
             break
 
     if config.sae_enable:
-        sae_state, sae_metrics = train_sae_posthoc(model, train_loader, config)
-        torch.save(
-            {
-                'config': config,
-                'sae_layers': parse_sae_layers(config.sae_layers, model.num_layers),
-                'sae_state': sae_state,
-                'sae_metrics': sae_metrics,
-            },
-            f"{config.outname}_sae.pt"
-        )
-        print(f"Saved SAE checkpoints to {config.outname}_sae.pt")
+        print('Warning: --sae_enable in main.py is deprecated and ignored.')
+        print('Use train_sae.py to run post-hoc SAE training from saved transformer checkpoints.')
 
     return None
 
@@ -351,14 +243,14 @@ parser.add_argument('--num_heads', type=int, default=None, help='number of heads
 parser.add_argument('--ffwd_size', type=int, default=None, help='MLP width scaling (transformer only)')
 parser.add_argument('--dropout', type=float, default=0.)
 parser.add_argument('--seed_model', type=int, help='seed for model initialization')
-parser.add_argument('--sae_enable', default=False, action='store_true')
-parser.add_argument('--sae_layers', type=str, default='all', help='comma-separated layer ids or all')
-parser.add_argument('--sae_latent_dim', type=int, default=None, help='latent width of SAE (default: 4 * embedding_dim)')
-parser.add_argument('--sae_lambda_l1', type=float, default=3, help='L1 sparsity coefficient for SAE latent activations')
-parser.add_argument('--sae_lr', type=float, default=1e-3, help='learning rate for SAE optimizer')
-parser.add_argument('--sae_steps', type=int, default=512, help='number of optimization steps for each SAE')
-parser.add_argument('--sae_batch_limit', type=int, default=0, help='max tokens per SAE step (0 uses all tokens in batch)')
-parser.add_argument('--sae_print_freq', type=int, default=128, help='print frequency during SAE training')
+parser.add_argument('--sae_enable', default=False, action='store_true', help='deprecated in main.py, use train_sae.py')
+parser.add_argument('--sae_layers', type=str, default='all', help='deprecated in main.py, use train_sae.py')
+parser.add_argument('--sae_latent_dim', type=int, default=None, help='deprecated in main.py, use train_sae.py')
+parser.add_argument('--sae_lambda_l1', type=float, default=3, help='deprecated in main.py, use train_sae.py')
+parser.add_argument('--sae_lr', type=float, default=1e-3, help='deprecated in main.py, use train_sae.py')
+parser.add_argument('--sae_steps', type=int, default=512, help='deprecated in main.py, use train_sae.py')
+parser.add_argument('--sae_batch_limit', type=int, default=0, help='deprecated in main.py, use train_sae.py')
+parser.add_argument('--sae_print_freq', type=int, default=128, help='deprecated in main.py, use train_sae.py')
 '''
        TRAINING ARGS
 '''

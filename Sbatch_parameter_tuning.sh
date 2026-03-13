@@ -18,13 +18,13 @@
 # $2=num_features
 # $3=num_layers
 # $4=num_synonyms       (optional, default: num_features)
-# $5=batch_size         (default: 32)
+# $5=batch_size         (default: 128)
 # $6=embedding_dim      (default: 512)
 # $7=num_heads          (default: 8)
 # $8=lr                 (default: 1e-3)
 # $9=max_epochs         (default: 20000)
 # $10=ffwd_size         (default: 4)
-# $11=dropout           (default: 0.1)
+# $11=dropout           (default: 0.0)
 # $12=save_models       (default: 0, set to 1 to save model weights for post-hoc SAE)
 
 DEVICE="cuda"
@@ -42,11 +42,11 @@ NUM_TOKENS=$(( TUPLE_SIZE ** NUM_LAYERS ))
 
 EMBEDDING_DIM=${6:-512}
 NUM_HEADS=${7:-8}
-LEARNING_RATE=${8:-1e-3}
+LEARNING_RATE=${8:-5e-3}
 MAX_EPOCHS=${9:-20000}
 FFWD_SIZE=${10:-4}
-DROPOUT=${11:-0.1}
-BATCH_SIZE=${5:-32}
+DROPOUT=${11:-0.0}
+BATCH_SIZE=${5:-128}
 SAVE_MODELS=${12:-0}
 
 # Keep width for compatibility/logging in existing training code
@@ -73,9 +73,9 @@ if [[ "$SAVE_MODELS" == "1" ]]; then
     SAVE_MODEL_ARGS+=(--save_models)
 fi
 
-OUTNAME="RESULT_TRFCLASS_v_${NUM_CLASSES}_L_${NUM_LAYERS}_m=${NUM_SYNONYMS}_P_${TRAIN_SIZE}_${SLURM_ARRAY_TASK_ID}_emb_${EMBEDDING_DIM}_h_${NUM_HEADS}_lr_${LEARNING_RATE}.pkl"
+OUTNAME="RESULT_TRFCLASS__batch_size_${BATCH_SIZE}_v_${NUM_CLASSES}_L_${NUM_LAYERS}_m=${NUM_SYNONYMS}_P_${TRAIN_SIZE}_${SLURM_ARRAY_TASK_ID}_emb_${EMBEDDING_DIM}_h_${NUM_HEADS}_lr_${LEARNING_RATE}.pkl"
 
-RESULTS_DIR="/work/pcsl/ponsin/Transformer_scaling_laws/results_scale_law_varying_m/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}/"
+RESULTS_DIR="/work/pcsl/ponsin/Transformer_parameter_tuning/batch_size/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}_/"
 
 mkdir -p "$RESULTS_DIR"
 

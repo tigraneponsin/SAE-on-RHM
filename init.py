@@ -242,8 +242,8 @@ def init_model(args):
         raise ValueError('model argument is invalid!')
 
     model = model.to(args.device)
-#     if args.device=='cuda':
-#         model = torch.compile(model)  #TODO: check that this is actually running faster on gpus
+    if args.device=='cuda':
+        model = torch.compile(model)  #TODO: check that this is actually running faster on gpus
     param_count = sum([p.numel() for p in model.parameters()])
     print("# parameters:", param_count)
 
