@@ -65,14 +65,14 @@
 #done
 
 
-v=16
-L=3
-m=5
-for P in 3840 4480 5120 5760 6400 7040 7680 8320 8960 10240; do #16640 21760 25600
-   for batch_size in 64; do
-       sbatch Sbatch_parameter_tuning.sh "$P" "$v" "$L" "$m" "$batch_size" "" "" "" "" "" "0.05"
-   done
-done
+# v=16
+# L=3
+# m=5
+# for P in 3840 4480 5120 5760 6400 7040 7680 8320 8960 10240; do #16640 21760 25600
+#    for batch_size in 64; do
+#        sbatch Sbatch_parameter_tuning.sh "$P" "$v" "$L" "$m" "$batch_size" "" "" "" "" "" "0.05"
+#    done
+# done
 
 # v=16
 # L=3
@@ -101,4 +101,5 @@ done
 #         sbatch Sbatch_parameter_tuning.sh "$P" "$v" "$L" "$m" "$batch_size" "" "" "" "" "" "0.1"
 #     done
 # done
+
 

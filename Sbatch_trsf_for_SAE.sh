@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name test_rhm_trfclass
+#SBATCH --job-name trfclass_savemodel
 #SBATCH --chdir /home/ponsin
 #SBATCH -o /dev/null
 #SBATCH -e /dev/null
@@ -11,7 +11,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --account pcsl
-#SBATCH --array=0-2%3
+#SBATCH --array=0-0%1
 
 # Arguments:
 # $1=train_size
@@ -21,11 +21,11 @@
 # $5=batch_size         (default: 32)
 # $6=embedding_dim      (default: 512)
 # $7=num_heads          (default: 8)
-# $8=lr                 (default: 1e-3)
+# $8=lr                 (default: 5e-3)
 # $9=max_epochs         (default: 20000)
 # $10=ffwd_size         (default: 4)
 # $11=dropout           (default: 0.1)
-# $12=save_models       (default: 0, set to 1 to save model weights for post-hoc SAE)
+# $12=save_models       (deprecated for this launcher; rules tracking for SAE requires saving models and is forced on)
 
 DEVICE="cuda"
 MODE="class"
@@ -47,7 +47,7 @@ MAX_EPOCHS=${9:-20000}
 FFWD_SIZE=${10:-4}
 DROPOUT=${11:-0.1}
 BATCH_SIZE=${5:-32}
-SAVE_MODELS=${12:-0}
+SAVE_MODELS=${12:-1}
 
 # Keep width for compatibility/logging in existing training code
 WIDTH=$EMBEDDING_DIM
@@ -69,13 +69,15 @@ SAVE_FREQ=2
 LOSS_THRESHOLD=0.001
 
 SAVE_MODEL_ARGS=()
-if [[ "$SAVE_MODELS" == "1" ]]; then
-    SAVE_MODEL_ARGS+=(--save_models)
+if [[ "$SAVE_MODELS" != "1" ]]; then
+    echo "[WARN] Overriding save_models=${SAVE_MODELS} -> 1 to preserve RHM rules for post-hoc SAE."
 fi
+SAVE_MODELS=1
+SAVE_MODEL_ARGS+=(--save_models)
 
 OUTNAME="RESULT_TRFCLASS_v_${NUM_CLASSES}_L_${NUM_LAYERS}_m=${NUM_SYNONYMS}_P_${TRAIN_SIZE}_${SLURM_ARRAY_TASK_ID}_emb_${EMBEDDING_DIM}_h_${NUM_HEADS}_lr_${LEARNING_RATE}_dropout_${DROPOUT}.pkl"
 
-RESULTS_DIR="/work/pcsl/ponsin/Transformer_scaling_laws/results_scale_law_varying_m/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}/"
+RESULTS_DIR="/work/pcsl/ponsin/Transformer_for_SAE/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}/"
 
 mkdir -p "$RESULTS_DIR"
 
@@ -86,6 +88,24 @@ cd "$RESULTS_DIR" || exit 1
 
 echo STARTING AT
 date
+
+MANIFEST_PATH="${RESULTS_DIR}/${OUTNAME%.pkl}_manifest.txt"
+{
+    echo "outname=${OUTNAME}"
+    echo "artifact_path=${RESULTS_DIR}/${OUTNAME}.pt"
+    echo "seed_rules=${seed1}"
+    echo "seed_sample=${seed2}"
+    echo "seed_model=${seed3}"
+    echo "num_features=${NUM_FEATURES}"
+    echo "num_classes=${NUM_CLASSES}"
+    echo "num_synonyms=${NUM_SYNONYMS}"
+    echo "tuple_size=${TUPLE_SIZE}"
+    echo "num_layers=${NUM_LAYERS}"
+    echo "train_size=${TRAIN_SIZE}"
+    echo "test_size=${TEST_SIZE}"
+    echo "input_format=${INPUT_FORMAT}"
+} > "${MANIFEST_PATH}"
+echo "Saved run manifest: ${MANIFEST_PATH}"
 
 srun python /home/ponsin/SAE-on-RHM/main.py \
     --device "$DEVICE" \
@@ -124,3 +144,5 @@ srun python /home/ponsin/SAE-on-RHM/main.py \
 
 echo FINISHED AT
 date
+
+echo "Expected transformer artifact for SAE: ${RESULTS_DIR}/${OUTNAME}.pt"

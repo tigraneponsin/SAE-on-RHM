@@ -10,7 +10,23 @@ class SparseAutoencoder(nn.Module):
         self.latent_dim = latent_dim
 
         self.encoder = nn.Linear(self.input_dim, self.latent_dim, bias=True)
-        self.decoder = nn.Linear(self.latent_dim, self.input_dim, bias=False)
+        self.decoder = nn.Linear(self.latent_dim, self.input_dim, bias=True)
+        self._reset_custom_parameters()
+
+    def _reset_custom_parameters(self, decoder_col_norm=0.1, eps=1e-12):
+        with torch.no_grad():
+            # Decoder columns are random directions with fixed norm.
+            w_dec = torch.randn(self.input_dim, self.latent_dim, device=self.decoder.weight.device)
+            w_dec = w_dec / (w_dec.norm(dim=0, keepdim=True) + eps)
+            w_dec = w_dec * float(decoder_col_norm)
+            self.decoder.weight.copy_(w_dec)
+
+            # Encoder starts as decoder transpose.
+            self.encoder.weight.copy_(self.decoder.weight.t())
+
+            # Biases start at zero for both encoder and decoder.
+            self.encoder.bias.zero_()
+            self.decoder.bias.zero_()
 
     def forward(self, x):
         z = F.relu(self.encoder(x))
@@ -26,7 +42,7 @@ class SparseAutoencoder(nn.Module):
         recon_loss = F.mse_loss(recon, x)
         #decoder weighted L1 penalty
         dec_norms = self.decoder_feature_norms()
-        sparse_loss = (z.abs() * dec_norms.unsqueeze(0)).sum(dim=1).mean()
+        sparse_loss = (z.abs() * dec_norms.unsqueeze(0)).mean(dim=1).mean()
         total_loss = recon_loss + lambda_l1 * sparse_loss
         return total_loss, recon_loss, sparse_loss
 
@@ -39,3 +55,5 @@ class SparseAutoencoder(nn.Module):
             'active_fraction': active_fraction,
             'dead_features': dead_features
         }
+
+   

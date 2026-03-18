@@ -12,6 +12,7 @@ import torch.optim as optim
 
 import datasets, models
 import init
+from datasets.random_hierarchy_model import sample_trees
 
 
 def parse_sae_layers(sae_layers, num_layers):
@@ -36,10 +37,16 @@ def train_sae_posthoc(model, train_loader, config):
     layer_ids = parse_sae_layers(config.sae_layers, model.num_layers)
     sae_state = {}
     sae_metrics = {}
+    sae_curves = {}
 
     latent_dim = config.sae_latent_dim if config.sae_latent_dim is not None else 4 * model.embedding_dim
     batch_limit = config.sae_batch_limit if config.sae_batch_limit > 0 else None
     print_freq = max(config.sae_print_freq, 1)
+    activation_source = str(config.sae_activation_source).lower()
+    assert activation_source in {'all_tokens', 'cls_token'}, (
+        f"sae_activation_source={config.sae_activation_source} is invalid. "
+        "Use one of: all_tokens, cls_token"
+    )
 
     for layer_id in layer_ids:
         sae = models.SparseAutoencoder(
@@ -56,10 +63,15 @@ def train_sae_posthoc(model, train_loader, config):
         hook = model.blocks[layer_id].register_forward_hook(save_activation)
 
         step = 0
-        running_total = 0.0
-        running_recon = 0.0
-        running_sparse = 0.0
+        last_total = 0.0
+        last_recon = 0.0
+        last_sparse = 0.0
         last_z = None
+        init_logged = False
+        curve_steps = []
+        curve_total = []
+        curve_recon = []
+        curve_sparse = []
 
         while step < config.sae_steps:
             for inputs, _ in train_loader:
@@ -70,11 +82,35 @@ def train_sae_posthoc(model, train_loader, config):
                     continue
 
                 activation = activation_buffer.pop(0)
+
+                # Select which token positions provide SAE training activations.
+                # For transformer_class, position 0 is [CLS] and positions 1..T are input tokens.
+                if activation_source == 'cls_token':
+                    activation = activation[:, :1, :]
+                else:
+                    activation = activation[:, 1:, :]
+
                 activation = activation.reshape(-1, activation.size(-1))
 
                 if batch_limit is not None and activation.size(0) > batch_limit:
                     sample_ids = torch.randperm(activation.size(0), device=activation.device)[:batch_limit]
                     activation = activation[sample_ids]
+
+                if not init_logged:
+                    with torch.no_grad():
+                        init_total, init_recon, init_sparse = sae.loss(activation, lambda_l1=config.sae_lambda_l1)
+                        _, init_z = sae(activation)
+                        init_stats = sae.activation_stats(init_z)
+                    curve_steps.append(0)
+                    curve_total.append(float(init_total.item()))
+                    curve_recon.append(float(init_recon.item()))
+                    curve_sparse.append(float(init_sparse.item()))
+                    print(
+                        f'sae layer {layer_id} step 0/{config.sae_steps} '
+                        f'total={init_total.item():.6f} recon={init_recon.item():.6f} sparse={init_sparse.item():.6f} '
+                        f'active_fraction={init_stats["active_fraction"]:.6f} dead_features={init_stats["dead_features"]}'
+                    )
+                    init_logged = True
 
                 total_loss, recon_loss, sparse_loss = sae.loss(activation, lambda_l1=config.sae_lambda_l1)
 
@@ -82,17 +118,21 @@ def train_sae_posthoc(model, train_loader, config):
                 total_loss.backward()
                 optimizer.step()
 
-                running_total += total_loss.item()
-                running_recon += recon_loss.item()
-                running_sparse += sparse_loss.item()
+                last_total = float(total_loss.item())
+                last_recon = float(recon_loss.item())
+                last_sparse = float(sparse_loss.item())
                 with torch.no_grad():
                     _, last_z = sae(activation)
 
                 step += 1
                 if step % print_freq == 0 or step == config.sae_steps:
+                    curve_steps.append(int(step))
+                    curve_total.append(last_total)
+                    curve_recon.append(last_recon)
+                    curve_sparse.append(last_sparse)
                     print(
                         f'sae layer {layer_id} step {step}/{config.sae_steps} '
-                        f'total={running_total / step:.6f} recon={running_recon / step:.6f} sparse={running_sparse / step:.6f}'
+                        f'total={last_total:.6f} recon={last_recon:.6f} sparse={last_sparse:.6f}'
                     )
 
                 if step >= config.sae_steps:
@@ -102,17 +142,23 @@ def train_sae_posthoc(model, train_loader, config):
 
         stats = sae.activation_stats(last_z) if last_z is not None else {'active_fraction': 0.0, 'dead_features': latent_dim}
         sae_metrics[layer_id] = {
-            'total_loss': running_total / max(step, 1),
-            'recon_loss': running_recon / max(step, 1),
-            'sparse_loss': running_sparse / max(step, 1),
+            'total_loss': last_total,
+            'recon_loss': last_recon,
+            'sparse_loss': last_sparse,
             'active_fraction': stats['active_fraction'],
             'dead_features': stats['dead_features'],
             'steps': step,
             'latent_dim': latent_dim,
         }
         sae_state[layer_id] = copy.deepcopy(sae.state_dict())
+        sae_curves[layer_id] = {
+            'step': curve_steps,
+            'total': curve_total,
+            'recon': curve_recon,
+            'sparse': curve_sparse,
+        }
 
-    return sae_state, sae_metrics, layer_ids
+    return sae_state, sae_metrics, sae_curves, layer_ids
 
 
 def _set_if_missing(config, key, value):
@@ -150,7 +196,8 @@ def _load_training_artifacts(args):
         )
         model_state = output['model']
         model_step = output.get('step', None)
-        return config, model_state, model_step
+        rules = output.get('rules', None)
+        return config, model_state, model_step, rules
 
     assert args.model_checkpoint is not None and args.config_checkpoint is not None, (
         'Use either --train_output, or both --config_checkpoint and --model_checkpoint.'
@@ -158,6 +205,7 @@ def _load_training_artifacts(args):
 
     config_blob = torch.load(args.config_checkpoint, map_location='cpu')
     config = _load_config_from_blob(config_blob)
+    rules = config_blob.get('rules', None) if isinstance(config_blob, dict) else None
 
     model_blob = torch.load(args.model_checkpoint, map_location='cpu')
     if isinstance(model_blob, dict) and 'model' in model_blob:
@@ -167,11 +215,11 @@ def _load_training_artifacts(args):
         model_state = model_blob
         model_step = None
 
-    return config, model_state, model_step
+    return config, model_state, model_step, rules
 
 
 def run(args):
-    config, model_state, model_step = _load_training_artifacts(args)
+    config, model_state, model_step, fixed_rules = _load_training_artifacts(args)
 
     _set_if_missing(config, 'sae_layers', 'all')
     _set_if_missing(config, 'sae_latent_dim', None)
@@ -180,6 +228,8 @@ def run(args):
     _set_if_missing(config, 'sae_steps', 512)
     _set_if_missing(config, 'sae_batch_limit', 0)
     _set_if_missing(config, 'sae_print_freq', 128)
+    _set_if_missing(config, 'sae_activation_source', 'all_tokens')
+    _set_if_missing(config, 'sae_sample_batch_size', int(config.batch_size))
 
     if args.device is not None:
         config.device = args.device
@@ -197,32 +247,97 @@ def run(args):
         config.sae_batch_limit = args.sae_batch_limit
     if args.sae_print_freq is not None:
         config.sae_print_freq = args.sae_print_freq
+    if args.sae_activation_source is not None:
+        config.sae_activation_source = args.sae_activation_source
+    if args.sae_sample_batch_size is not None:
+        config.sae_sample_batch_size = args.sae_sample_batch_size
 
-    if config.batch_size >= config.train_size:
-        config.batch_size = config.train_size
-    assert (config.train_size % config.batch_size) == 0, 'batch_size must divide train_size!'
+    sae_train_size = args.sae_train_size if args.sae_train_size is not None else int(config.train_size)
+    sae_eval_size = args.sae_eval_size if args.sae_eval_size is not None else int(config.test_size if config.test_size > 0 else config.train_size)
+    assert sae_train_size > 0, 'sae_train_size must be > 0'
+    assert sae_eval_size > 0, 'sae_eval_size must be > 0'
 
-    rhm = datasets.RHM(
-        v=config.num_features,
-        n=config.num_classes,
-        m=config.num_synonyms,
-        s=config.tuple_size,
-        L=config.num_layers,
-        seed_rules=config.seed_rules,
-        seed_samples=config.seed_sample,
-        num_data=config.train_size + config.test_size,
-        probs=None,
-        transform=None,
+    transformer_seed_sample = int(config.seed_sample)
+    sae_train_seed_sample = args.sae_train_seed_sample if args.sae_train_seed_sample is not None else transformer_seed_sample + 1
+    if sae_train_seed_sample == transformer_seed_sample:
+        sae_train_seed_sample = transformer_seed_sample + 1
+    sae_eval_seed_sample = args.sae_eval_seed_sample if args.sae_eval_seed_sample is not None else sae_train_seed_sample + 1
+    if sae_eval_seed_sample == sae_train_seed_sample:
+        sae_eval_seed_sample = sae_train_seed_sample + 1
+
+    print(
+        f'SAE data split: train_size={sae_train_size} (seed_sample={sae_train_seed_sample}), '
+        f'eval_size={sae_eval_size} (seed_sample={sae_eval_seed_sample})'
     )
-    inputs = rhm.trees[config.num_layers]
-    targets = rhm.trees[0]
-    train_loader, _ = init.init_data(inputs, targets, config)
+    print(f'Transformer training seed_sample={transformer_seed_sample}')
+    if fixed_rules is not None:
+        print('Using fixed RHM rules loaded from training artifact.')
+    else:
+        print('No saved RHM rules found; regenerating rules from seed_rules.')
+
+    assert int(config.sae_sample_batch_size) > 0, 'sae_sample_batch_size must be > 0'
+
+    # Build a dedicated split for SAE training.
+    if fixed_rules is not None:
+        trees_train = sample_trees(
+            num_data=sae_train_size,
+            rules=fixed_rules,
+            prior=None,
+            probs=None,
+            seed=sae_train_seed_sample,
+        )
+        inputs_train = trees_train[config.num_layers]
+        targets_train = trees_train[0]
+    else:
+        rhm_train = datasets.RHM(
+            v=config.num_features,
+            n=config.num_classes,
+            m=config.num_synonyms,
+            s=config.tuple_size,
+            L=config.num_layers,
+            seed_rules=config.seed_rules,
+            seed_samples=sae_train_seed_sample,
+            num_data=sae_train_size,
+            probs=None,
+            transform=None,
+        )
+        inputs_train = rhm_train.trees[config.num_layers]
+        targets_train = rhm_train.trees[0]
+
+    train_data_config = copy.deepcopy(config)
+    train_data_config.train_size = sae_train_size
+    train_data_config.test_size = 0
+    train_data_config.batch_size = min(int(config.sae_sample_batch_size), int(sae_train_size))
+    train_loader, _ = init.init_data(inputs_train, targets_train, train_data_config)
+
+    # Build a separate split reserved for later SAE analysis.
+    if fixed_rules is not None:
+        _ = sample_trees(
+            num_data=sae_eval_size,
+            rules=fixed_rules,
+            prior=None,
+            probs=None,
+            seed=sae_eval_seed_sample,
+        )
+    else:
+        _ = datasets.RHM(
+            v=config.num_features,
+            n=config.num_classes,
+            m=config.num_synonyms,
+            s=config.tuple_size,
+            L=config.num_layers,
+            seed_rules=config.seed_rules,
+            seed_samples=sae_eval_seed_sample,
+            num_data=sae_eval_size,
+            probs=None,
+            transform=None,
+        )
 
     model = init.init_model(config)
     model.load_state_dict(model_state)
     model = model.to(config.device)
 
-    sae_state, sae_metrics, layer_ids = train_sae_posthoc(model, train_loader, config)
+    sae_state, sae_metrics, sae_curves, layer_ids = train_sae_posthoc(model, train_loader, config)
 
     outname = _resolve_sae_output_name(args)
     torch.save(
@@ -234,9 +349,31 @@ def run(args):
                 'model_checkpoint': args.model_checkpoint,
                 'model_step': model_step,
             },
+            'sae_dataset_split': {
+                'rules_source': 'artifact' if fixed_rules is not None else 'seed_rules_resampled',
+                'rules_seed': int(config.seed_rules),
+                'train_size': int(sae_train_size),
+                'eval_size': int(sae_eval_size),
+                'transformer_seed_sample': int(transformer_seed_sample),
+                'train_seed_sample': int(sae_train_seed_sample),
+                'eval_seed_sample': int(sae_eval_seed_sample),
+                'is_train_seed_different_from_transformer': bool(sae_train_seed_sample != transformer_seed_sample),
+                'is_disjoint_seed': bool(sae_train_seed_sample != sae_eval_seed_sample),
+                'num_features': int(config.num_features),
+                'num_classes': int(config.num_classes),
+                'num_synonyms': int(config.num_synonyms),
+                'tuple_size': int(config.tuple_size),
+                'num_layers': int(config.num_layers),
+            },
             'sae_layers': layer_ids,
             'sae_state': sae_state,
             'sae_metrics': sae_metrics,
+            'sae_training_curves': sae_curves,
+            'sae_training_setup': {
+                'sae_activation_source': str(config.sae_activation_source),
+                'sae_sample_batch_size': int(config.sae_sample_batch_size),
+                'sae_batch_limit': int(config.sae_batch_limit),
+            },
         },
         outname,
     )
@@ -260,7 +397,13 @@ if __name__ == '__main__':
     parser.add_argument('--sae_lr', type=float, default=None, help='learning rate for SAE optimizer')
     parser.add_argument('--sae_steps', type=int, default=None, help='number of optimization steps for each SAE')
     parser.add_argument('--sae_batch_limit', type=int, default=None, help='max tokens per SAE step (0 uses all tokens in batch)')
+    parser.add_argument('--sae_sample_batch_size', type=int, default=None, help='number of RHM samples per forward pass used to gather SAE activations')
+    parser.add_argument('--sae_activation_source', type=str, default=None, help='which positions feed SAE: all_tokens or cls_token')
     parser.add_argument('--sae_print_freq', type=int, default=None, help='print frequency during SAE training')
+    parser.add_argument('--sae_train_size', type=int, default=None, help='number of RHM samples used to train SAE')
+    parser.add_argument('--sae_eval_size', type=int, default=None, help='number of RHM samples reserved for later SAE analysis')
+    parser.add_argument('--sae_train_seed_sample', type=int, default=None, help='seed_samples used for SAE training split (defaults to transformer seed + 1)')
+    parser.add_argument('--sae_eval_seed_sample', type=int, default=None, help='seed_samples used for analysis split (defaults to train seed + 1)')
 
     args = parser.parse_args()
 

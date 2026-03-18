@@ -346,3 +346,189 @@
 #for P in 
 
 
+
+# v=16
+# L=3
+# m=2
+# batch_size=8
+# for P in 16 32 48 64 80 96 128 160 192 256 352 480 672 960 1344 1792; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size" 
+# done
+
+# v=16
+# L=3
+# m=4
+# batch_size=16
+# for P in 672 960 1344 1792 2176 2944 4224 6016 8576 12160 17280 24576; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size" 
+# done
+
+# v=16
+# L=3
+# m=6
+# batch_size=32
+# for P in 7680; do # 1792 2176 2944 4224 6016 8576 9600 12160 17280 24576; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size" 
+# done
+
+# v=16
+# L=3
+# m=8
+# batch_size=32
+# for P in 7680 8576 9600 12160 17280 24576 34944 49664 55040 62720 66560; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size" 
+# done
+
+# v=16
+# L=3
+# m=8
+# batch_size=32
+# for P in 20480; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size" 
+# done
+
+
+# v=16
+# L=3
+# m=12
+# batch_size=64
+# for P in 24576 34944 38400 44800 49664 61440 70400 80896 90112 99968 128000; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+# v=16
+# L=2
+# m=2
+# batch_size=4
+# for P in 4 8 16 32 64 96 128 152 256 ; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+# v=16
+# L=2
+# m=2
+# batch_size=4
+# for P in 192 ; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+# v=16
+# L=2
+# m=4
+# batch_size=8
+# for P in 88 104 136 168 200 262 360 488 680 968 1352 1800 ; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+# v=16
+# L=2
+# m=6
+# batch_size=16
+# for P in  368 480 688 960 1120 1232 1352 1440 1600 1800  ; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+# v=16
+# L=2
+# m=8
+# batch_size=16
+# for P in  688 960 1120 1352 1440 1600 1800 1920 2080 2240 ; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+# v=16
+# L=2
+# m=12
+# batch_size=32
+# for P in  688 960 1120 1352 1600 1800 2240  2560  3040  3520 4160 4800 5760 ; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+
+
+
+# v=16
+# L=4
+# m=2
+# batch_size=8
+# for P in 88 104 136 168 200 262 360 488 680 968 1352 1800; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+# v=16
+# L=4
+# m=3
+# batch_size=16
+# for P in  480 672 960 1344 1792 2176 2944 4224 6016; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+# v=16
+# L=4
+# m=3
+# batch_size=16
+# for P in  5120; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+# v=16
+# L=4
+# m=4
+# batch_size=32
+# for P in  1792 2176 2944 4224 6016 7040 7680 8576 9600 12160 17280 24576; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+# v=16
+# L=4
+# m=4
+# batch_size=32
+# for P in  13440 ; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+
+
+# v=16
+# L=4
+# m=6
+# batch_size=64
+# for P in  12160 17280 24576 28800 32000 38400 49664 60800 66560; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+# v=16
+# L=4
+# m=6
+# batch_size=64
+# for P in  66560; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+
+# v=16
+# L=4
+# m=8
+# batch_size=128
+# for P in  49664 54912 60544 66944 73984 81664 90240 99584 110080 121600 134272 148352 163840 180992 199936; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size" "" "" "" "" "" "0"
+# done
+
+
+# v=16
+# L=4
+# m=10
+# batch_size=64
+# for P in   110080 134272 163840 180992 199936 217600 230400 256000 294400 358400; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
+
+
+
+
+
+
+
+
+
+
