@@ -352,3 +352,77 @@ class ClassificationTransformer(nn.Module):
         logits = self.classifier(cls_out)  # [bs, num_classes]
 
         return logits
+    
+
+class MeanClassificationTransformer(nn.Module):
+    """
+    Encoder-only Transformer for classification tasks.
+        The final representation is the mean of all token representations.
+        A linear layer maps the mean representation to the output classes.
+    
+    Args:
+        vocab_size: The size of the vocabulary (number of token classes).
+        block_size: The (maximal) number of input tokens (excluding [CLS]).
+        embedding_dim: The embedding dimension.
+        num_heads: The number of attention heads.
+        ffwd_size: Size of the MLP is ffwd_size*embedding_dim.
+        num_layers: The number of transformer blocks.
+        num_classes: The number of output classes.
+        dropout: The fraction of weights to zero via dropout.
+    """
+    def __init__(
+        self, vocab_size, block_size, embedding_dim, num_heads, ffwd_size, num_layers,
+        num_classes, dropout=0
+    ):
+        super().__init__()
+
+        self.block_size = block_size
+        self.embedding_dim = embedding_dim
+        self.num_heads = num_heads
+        self.ffwd_size = ffwd_size
+        self.num_layers = num_layers
+        self.num_classes = num_classes
+
+        self.token_embedding_table = nn.Embedding(vocab_size, self.embedding_dim)
+        self.position_embedding_table = nn.Embedding(self.block_size, self.embedding_dim)
+
+        self.blocks = nn.Sequential(
+            *[
+                DecoderBlock(
+                    embedding_dim=self.embedding_dim,
+                    input_size=self.block_size,
+                    num_heads=self.num_heads,
+                    ffwd_size=self.ffwd_size,
+                    decoder=False,
+                    dropout=dropout
+                ) for _ in range(self.num_layers)
+            ]
+        )
+        self.ln_f = nn.LayerNorm(self.embedding_dim)
+        self.classifier = nn.Linear(self.embedding_dim, self.num_classes)
+
+    def forward(self, idx):
+        """
+        Args:
+            idx: input token indices, tensor of size (batch_size, seq_len).
+        
+        Returns:
+            Logits of size (batch_size, num_classes).
+        """
+        B, T = idx.size()
+
+        token_emb = self.token_embedding_table(idx)  # [bs, seq_len, embedding_dim]
+
+        # Positional embeddings for sequence
+        pos_emb = self.position_embedding_table(torch.arange(T, device=idx.device))
+        x = token_emb + pos_emb  # [bs, seq_len, embedding_dim]
+
+        x = self.blocks(x)  # [bs, seq_len, embedding_dim]
+        x = self.ln_f(x)    # [bs,  seq_len, embedding_dim]
+
+        # Compute mean representation across the sequence dimension
+        mean_out = x.mean(dim=1)  # [bs, embedding_dim]
+
+        logits = self.classifier(mean_out)  # [bs, num_classes]
+
+        return logits

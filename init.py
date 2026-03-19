@@ -235,8 +235,23 @@ def init_model(args):
                 dropout=args.dropout,
             )
         
+        elif args.model == 'transformer_meanclass':
+            
+            if args.ffwd_size is None:
+                args.ffwd_size = 4
+            model = models.MeanClassificationTransformer(
+                vocab_size=args.num_features,
+                block_size=args.num_tokens,
+                embedding_dim=args.embedding_dim,
+                num_heads=args.num_heads,
+                ffwd_size=args.ffwd_size,
+                num_layers=args.depth,
+                num_classes=args.num_classes,
+                dropout=args.dropout,
+            )
+        
         else:
-            raise ValueError(f'Unknown transformer model: {args.model}. Expected one of: transformer_mla, transformer_clm, transformer_class')
+            raise ValueError(f'Unknown transformer model: {args.model}. Expected one of: transformer_mla, transformer_clm, transformer_class, transformer_meanclass')
 
     else:
         raise ValueError('model argument is invalid!')

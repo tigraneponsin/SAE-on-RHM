@@ -42,7 +42,7 @@ class SparseAutoencoder(nn.Module):
         recon_loss = F.mse_loss(recon, x)
         #decoder weighted L1 penalty
         dec_norms = self.decoder_feature_norms()
-        sparse_loss = (z.abs() * dec_norms.unsqueeze(0)).mean(dim=1).mean()
+        sparse_loss = (z.abs() * dec_norms.unsqueeze(0)).sum(dim=1).mean()
         total_loss = recon_loss + lambda_l1 * sparse_loss
         return total_loss, recon_loss, sparse_loss
 

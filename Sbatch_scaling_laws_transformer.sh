@@ -61,7 +61,7 @@ ACCUMULATION=1
 INPUT_FORMAT="long"
 WHITENING=0
 
-MODEL="transformer_class"
+MODEL="transformer_meanclass"
 OPTIM="adam"
 MOMENTUM=0.0
 PRINT_FREQ=32768
@@ -75,7 +75,7 @@ fi
 
 OUTNAME="RESULT_TRFCLASS_v_${NUM_CLASSES}_L_${NUM_LAYERS}_m=${NUM_SYNONYMS}_P_${TRAIN_SIZE}_${SLURM_ARRAY_TASK_ID}_emb_${EMBEDDING_DIM}_h_${NUM_HEADS}_lr_${LEARNING_RATE}_dropout_${DROPOUT}.pkl"
 
-RESULTS_DIR="/work/pcsl/ponsin/Transformer_scaling_laws/results_scale_law_varying_m/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}/"
+RESULTS_DIR="/work/pcsl/ponsin/Mean_Transformer/Transformer_scaling_laws/results_scale_law_varying_m/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}/"
 
 mkdir -p "$RESULTS_DIR"
 

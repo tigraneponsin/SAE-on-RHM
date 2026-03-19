@@ -523,12 +523,32 @@
 #     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
 # done
 
+# v=16
+# L=3
+# m=4
+# batch_size=16
+# for P in 960 1344 1792 2176 2944 4224 6016 8576 12160 17280 24576 ; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size" 
+# done
 
 
 
+# v=16
+# L=2
+# m=12
+# batch_size=16
+# for P in  688 960 1120 1352 1600 1800 2240  2560  3040  3520 4160 4800 5760 ; do
+#     sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size"
+# done
 
 
-
+v=16
+L=4
+m=2
+batch_size=8
+for P in 88 104 136 168 200 262 360 488 680 968 1352 1800; do
+    sbatch Sbatch_scaling_laws_transformer.sh "$P" "$v" "$L" "$m" "$batch_size" "" "" "" "" "" "0.2"
+done
 
 
 

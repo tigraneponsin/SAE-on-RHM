@@ -203,10 +203,6 @@ def run( config):
 
             break
 
-    if config.sae_enable:
-        print('Warning: --sae_enable in main.py is deprecated and ignored.')
-        print('Use train_sae.py to run post-hoc SAE training from saved transformer checkpoints.')
-
     return None
 
 torch.set_default_dtype(torch.float32)
@@ -233,7 +229,7 @@ parser.add_argument('--whitening', type=int, default=0)
 '''
 	ARCHITECTURE ARGS
 '''
-parser.add_argument('--model', type=str, help='architecture (fcn, hcnn, hlcn, transformer_mla, transformer_clm, transformer_class)')
+parser.add_argument('--model', type=str, help='architecture (fcn, hcnn, hlcn, transformer_mla, transformer_clm, transformer_class, transformer_meanclass)')
 parser.add_argument('--depth', type=int, help='depth of the network')
 parser.add_argument('--width', type=int, help='width of the network')
 parser.add_argument('--filter_size', type=int, default=None, help='filter size (CNN, LCN only)')
@@ -243,14 +239,6 @@ parser.add_argument('--num_heads', type=int, default=None, help='number of heads
 parser.add_argument('--ffwd_size', type=int, default=None, help='MLP width scaling (transformer only)')
 parser.add_argument('--dropout', type=float, default=0.)
 parser.add_argument('--seed_model', type=int, help='seed for model initialization')
-parser.add_argument('--sae_enable', default=False, action='store_true', help='deprecated in main.py, use train_sae.py')
-parser.add_argument('--sae_layers', type=str, default='all', help='deprecated in main.py, use train_sae.py')
-parser.add_argument('--sae_latent_dim', type=int, default=None, help='deprecated in main.py, use train_sae.py')
-parser.add_argument('--sae_lambda_l1', type=float, default=3, help='deprecated in main.py, use train_sae.py')
-parser.add_argument('--sae_lr', type=float, default=1e-3, help='deprecated in main.py, use train_sae.py')
-parser.add_argument('--sae_steps', type=int, default=512, help='deprecated in main.py, use train_sae.py')
-parser.add_argument('--sae_batch_limit', type=int, default=0, help='deprecated in main.py, use train_sae.py')
-parser.add_argument('--sae_print_freq', type=int, default=128, help='deprecated in main.py, use train_sae.py')
 '''
        TRAINING ARGS
 '''
