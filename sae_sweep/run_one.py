@@ -68,12 +68,14 @@ def main():
         '--sae_token_idx', str(c['sae_token_idx']),
         '--sae_train_size', str(c['sae_train_size']),
         '--sae_eval_size', str(c['sae_eval_size']),
-        '--sae_print_freq', str(c['sae_print_freq']),
+        '--sae_log_points', str(c['sae_log_points']),
         '--sae_lambda_warmup_frac', str(c.get('sae_lambda_warmup_frac', 0.05)),
         '--sae_lr_decay_frac', str(c.get('sae_lr_decay_frac', 0.2)),
     ]
     if c['sae_latent_dim'] is not None:
         cmd += ['--sae_latent_dim', str(c['sae_latent_dim'])]
+    if c.get('no_act_scale', False):
+        cmd += ['--no_act_scale']
     if args.device is not None:
         cmd += ['--device', args.device]
 

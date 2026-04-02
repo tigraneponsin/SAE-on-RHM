@@ -2,7 +2,7 @@
 
 Usage (CLI — recommended):
 
-    python sae_sweep/plot_loss_curves.py \\
+    python sae_sweep/plot_loss_curves.py \/
         --sweep_dir /work/pcsl/ponsin/Mean_Transformer/SAE/sweep_round1a_bs \\
         --color_by batch_size
 
@@ -135,7 +135,8 @@ def _format_val(color_by: str, val) -> str:
     return f'{color_by}={val}'
 
 
-def plot_curves(records, loss_types, max_steps, outfile, color_by='lr'):
+def plot_curves(records, loss_types, max_steps, outfile, color_by='lr',
+               yscale='log'):
     layers   = sorted({r['layer'] for r in records})
     all_vals = sorted({r[color_by] for r in records})
 
@@ -168,28 +169,29 @@ def plot_curves(records, loss_types, max_steps, outfile, color_by='lr'):
                 else:
                     vals  = r[loss_key]
 
-                pos = steps > 0
+                mask_first = np.ones(len(steps), dtype=bool)
+                mask_first[:2] = False
+                steps = steps[mask_first]
+                vals  = vals[mask_first]
+
                 ax.plot(
-                    steps[pos], vals[pos],
+                    steps, vals,
                     color=val_color[r[color_by]],
                     linewidth=1.5,
                     label=_format_val(color_by, r[color_by]),
                 )
-                if (steps == 0).any():
-                    ax.plot(
-                        steps[~pos], vals[~pos],
-                        marker='o', markersize=4,
-                        color=val_color[r[color_by]], linestyle='none',
-                    )
-                if pos.any():
-                    all_vals_plotted.append(vals[pos])
+                if len(vals):
+                    all_vals_plotted.append(vals)
 
             # Adapt y-axis to the range of plotted data (excluding step 0)
             if all_vals_plotted:
                 concat = np.concatenate(all_vals_plotted)
                 ymin, ymax = concat.min(), concat.max()
-                margin = 0.05 * (ymax - ymin) if ymax > ymin else 0.1 * abs(ymax)
-                ax.set_ylim(ymin - margin, ymax + margin)
+                if yscale == 'log':
+                    ax.set_yscale('log')
+                else:
+                    margin = 0.05 * (ymax - ymin) if ymax > ymin else 0.1 * abs(ymax)
+                    ax.set_ylim(ymin - margin, ymax + margin)
 
             ax.set_xscale('log')
             ax.set_xlabel('Steps', fontsize=10)
@@ -215,12 +217,18 @@ def plot_curves(records, loss_types, max_steps, outfile, color_by='lr'):
     sorted_handles = [handles_seen[l] for l in sorted_labels]
 
     legend_title = COLOR_BY_LABELS.get(color_by, color_by)
+    n_legend_cols = min(len(all_vals), 9)
+    n_legend_rows = max(1, -(-len(all_vals) // n_legend_cols))  # ceil division
+    bottom_pad = 0.03 + 0.055 * n_legend_rows  # reserve space proportional to legend height
+
+    plt.tight_layout(rect=[0, bottom_pad, 1, 0.96])
+
     fig.legend(
         sorted_handles, sorted_labels,
         title=legend_title,
         loc='lower center',
-        ncol=min(len(all_vals), 9),
-        bbox_to_anchor=(0.5, -0.02),
+        ncol=n_legend_cols,
+        bbox_to_anchor=(0.5, 0),
         fontsize=9,
     )
 
@@ -230,10 +238,9 @@ def plot_curves(records, loss_types, max_steps, outfile, color_by='lr'):
     source_str    = ' / '.join(curve_sources)
     fig.suptitle(
         f'SAE loss curves [{source_str}]  (λ₁ = {lambda_str})',
-        fontsize=13, y=1.01,
+        fontsize=13, y=0.99,
     )
 
-    plt.tight_layout()
     plt.savefig(outfile, dpi=150, bbox_inches='tight')
     print(f'Figure saved to {outfile}')
     plt.close(fig)
@@ -260,6 +267,8 @@ def _parse_args():
     p.add_argument('--color_by', type=str, default=None,
                    choices=['lr', 'batch_size', 'steps', 'train_size', 'lambda_l1'],
                    help=f'Parameter to color lines by (default: {DEFAULT_COLOR_BY})')
+    p.add_argument('--yscale', type=str, default='log', choices=['linear', 'log'],
+                   help='Y-axis scale for loss plots (default: linear)')
     return p.parse_args()
 
 
@@ -304,7 +313,8 @@ def main():
     print(f'{color_by} values: {vals}')
     print(f'Checkpoints plotted: {len(records)}')
 
-    plot_curves(records, loss_types, max_steps, outfile, color_by=color_by)
+    plot_curves(records, loss_types, max_steps, outfile, color_by=color_by,
+                yscale=args.yscale)
 
 
 if __name__ == '__main__':

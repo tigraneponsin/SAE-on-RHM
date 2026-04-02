@@ -17,10 +17,10 @@
 #SBATCH --account pcsl
 
 # ── Array size: set to 0-<N-1> where N = number printed by generate_sweep.py ─
-#SBATCH --array=0-19
+#SBATCH --array=0-25
 
 # ── Resources ─────────────────────────────────────────────────────────────────
-#SBATCH --time=04:00:00
+#SBATCH --time=01:00:00
 #SBATCH --partition=h100
 #SBATCH --gres=gpu:1
 #SBATCH --mem=90G
@@ -29,11 +29,16 @@
 # =============================================================================
 # USER: set these two paths
 # =============================================================================
-SWEEP_CONFIGS=/work/pcsl/ponsin/Mean_Transformer/SAE/sweep_round3_lambda_layer0/sweep_configs.json
+SWEEP_CONFIGS=/work/pcsl/ponsin/Mean_Transformer/SAE/2nd_generation/sweep_onetok0_layer0_lambda1_nowarm2/sweep_configs.json
 REPO_DIR=/home/ponsin/SAE-on-RHM
 # =============================================================================
 
 # ── Environment setup ─────────────────────────────────────────────────────────
+if [ -z "${SLURM_ARRAY_TASK_ID}" ]; then
+    echo "ERROR: SLURM_ARRAY_TASK_ID is not set. Submit this script with sbatch, not directly."
+    exit 1
+fi
+
 source /home/ponsin/miniconda3/etc/profile.d/conda.sh
 conda activate pcsl
 
@@ -58,6 +63,8 @@ echo "Node:       ${SLURMD_NODENAME}"
 echo "SWEEP_CONFIGS: ${SWEEP_CONFIGS}"
 echo "Output:     ${OUTNAME}"
 echo "======================================================================"
+
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 srun python "${REPO_DIR}/sae_sweep/run_one.py" \
     --sweep_configs "${SWEEP_CONFIGS}" \

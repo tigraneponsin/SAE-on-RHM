@@ -31,20 +31,21 @@ DEFAULT_OUTDIR       = '/work/pcsl/ponsin/Mean_Transformer/SAE/sweep_onetok_lr_2
 DEFAULT_PARAM_GRID = {
     'sae_layer':               [0, 1, 2],
     'sae_latent_dim':          [20 * 512],
-    'sae_lambda_l1':           [1],
-    'sae_lr':                  [1e-3],
-    'sae_steps':               [2**18],
+    'sae_lambda_l1':           [1e-2],
+    'sae_lr':                  [1e-4],
+    'sae_steps':               [2**17],
     'sae_sample_batch_size':   [2**7],
     'sae_batch_limit':         [0],
     'sae_train_size':          [2**14],
-    'sae_lambda_warmup_frac':  [0.05],
-    'sae_lr_decay_frac':       [0.2],
+    'sae_lambda_warmup_frac':  [0],
+    'sae_lr_decay_frac':       [0],
 }
 
 DEFAULT_ACTIVATION_SOURCE = 'one_token'
 DEFAULT_TOKEN_IDX         = 0
 DEFAULT_EVAL_SIZE         = 2**14
-DEFAULT_PRINT_FREQ_RATIO  = 256   # print_freq = steps // ratio
+DEFAULT_LOG_POINTS        = 128   # number of log-spaced checkpoints per job
+DEFAULT_NO_ACT_SCALE      = False
 
 # =============================================================================
 
@@ -93,11 +94,10 @@ def _parse_args():
                    choices=['all_tokens', 'cls_token', 'one_token'])
     p.add_argument('--sae_token_idx', type=int, default=None)
     p.add_argument('--sae_eval_size', type=int, default=None)
-    p.add_argument('--print_freq_ratio', type=int, default=None,
-                   help='Auto-compute print_freq = steps // ratio (default: 256). '
-                        'Set to 0 to use a fixed print_freq instead.')
-    p.add_argument('--sae_print_freq', type=int, default=None,
-                   help='Fixed print_freq (only used when --print_freq_ratio=0).')
+    p.add_argument('--sae_log_points', type=int, default=None,
+                   help=f'Number of log-spaced checkpoints per job (default: {DEFAULT_LOG_POINTS}).')
+    p.add_argument('--no_act_scale', action='store_true', default=False,
+                   help='Disable activation rescaling for all jobs in the sweep.')
     p.add_argument('--append', action='store_true', default=False,
                    help='Append to existing sweep_configs.json instead of overwriting. '
                         'Useful for combining different per-layer settings.')
@@ -206,10 +206,9 @@ def main():
     activation_source = args.sae_activation_source or DEFAULT_ACTIVATION_SOURCE
     token_idx = args.sae_token_idx if args.sae_token_idx is not None else DEFAULT_TOKEN_IDX
     eval_size = args.sae_eval_size if args.sae_eval_size is not None else DEFAULT_EVAL_SIZE
+    no_act_scale = args.no_act_scale if args.no_act_scale else DEFAULT_NO_ACT_SCALE
 
-    # print_freq: auto-compute from ratio, or use fixed value
-    print_freq_ratio = args.print_freq_ratio if args.print_freq_ratio is not None else DEFAULT_PRINT_FREQ_RATIO
-    fixed_print_freq = args.sae_print_freq  # None unless explicitly set
+    n_log_points = args.sae_log_points if args.sae_log_points is not None else DEFAULT_LOG_POINTS
 
     grid = _build_grid(args)
 
@@ -224,13 +223,7 @@ def main():
         raw = dict(zip(keys, combo))
         steps = int(raw['sae_steps'])
 
-        # Determine print_freq for this config
-        if print_freq_ratio > 0:
-            pf = max(1, steps // print_freq_ratio)
-        elif fixed_print_freq is not None:
-            pf = fixed_print_freq
-        else:
-            pf = max(1, steps // DEFAULT_PRINT_FREQ_RATIO)
+        pf = n_log_points
 
         c = {
             'train_output': str(train_output),
@@ -245,9 +238,10 @@ def main():
             'sae_token_idx': int(token_idx),
             'sae_train_size': int(raw['sae_train_size']),
             'sae_eval_size': int(eval_size),
-            'sae_print_freq': int(pf),
+            'sae_log_points': int(pf),
             'sae_lambda_warmup_frac': float(raw['sae_lambda_warmup_frac']),
             'sae_lr_decay_frac': float(raw['sae_lr_decay_frac']),
+            'no_act_scale': bool(no_act_scale),
         }
         c['outname'] = _make_outname(outdir, trsf_tag, c)
         configs.append(c)

@@ -1,10 +1,9 @@
 """Plot SAE quality metrics as a function of lambda_1.
 
-Reads the CSV produced by eval_sweep.py and plots four panels:
+Reads the CSV produced by eval_sweep.py and plots three panels:
   1. Ever-active features: binary (>0), >1% of max mean, >10% of max mean
   2. Mean active features per token: binary (>0), >1% of token max, >10% of token max
   3. Classification error (with baseline reference)
-  4. Effective features (IPR)
 
 Within panels 1 and 2, the three thresholds are shown with different
 linestyles (solid / dashed / dotted) and the same color per layer.
@@ -37,6 +36,35 @@ def _load_csv(path):
     return dict(by_layer)
 
 
+def _build_suptitle(by_layer, layers):
+    """Build a contextual figure title from mode/token_idx in the CSV rows."""
+    all_rows = [r for rows in by_layer.values() for r in rows]
+    modes = sorted(set(r.get('mode', 'all_tokens') for r in all_rows))
+    token_idxs = sorted(set(
+        r.get('token_idx', '')
+        for r in all_rows
+        if r.get('token_idx') not in ('', None, 'None')
+    ))
+
+    if len(modes) == 1:
+        mode_str = modes[0]
+        if mode_str == 'one_token' and len(token_idxs) == 1:
+            mode_label = f'one_token (tok={token_idxs[0]})'
+        elif mode_str == 'one_token':
+            mode_label = f'one_token (tok={",".join(token_idxs)})'
+        else:
+            mode_label = mode_str
+    else:
+        mode_label = ','.join(modes)
+
+    if len(layers) == 1:
+        layer_label = f'Layer {layers[0]}'
+    else:
+        layer_label = f'Layers {",".join(str(l) for l in layers)}'
+
+    return f'SAE metrics vs lambda_1  |  {layer_label}  |  {mode_label}'
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -47,6 +75,8 @@ def main():
                         help='Output figure path (default: <csv_dir>/lambda_metrics.png)')
     parser.add_argument('--xlim', type=float, nargs=2, default=None, metavar=('MIN', 'MAX'),
                         help='Lambda axis limits, e.g. --xlim 1e-2 1')
+    parser.add_argument('--log-y', action='store_true',
+                        help='Use log scale on the y-axis for ever-active and mean-active panels')
     args = parser.parse_args()
 
     by_layer = _load_csv(args.csv)
@@ -56,11 +86,12 @@ def main():
     colors = plt.cm.tab10(np.linspace(0, 1, max(len(layers), 1)))
     layer_color = {l: colors[i] for i, l in enumerate(layers)}
 
-    fig, axes = plt.subplots(2, 2, figsize=(13, 10))
-    ax_ever  = axes[0][0]
-    ax_mean  = axes[0][1]
-    ax_class = axes[1][0]
-    ax_ipr   = axes[1][1]
+    suptitle = _build_suptitle(by_layer, layers)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    ax_ever  = axes[0]
+    ax_mean  = axes[1]
+    ax_class = axes[2]
 
     # Linestyle legend entries (drawn once, outside the layer loop)
     thresh_styles = [
@@ -76,7 +107,6 @@ def main():
         dead = np.array([int(r['dead_features']) for r in rows])
         mean_active = np.array([float(r['mean_active']) for r in rows])
         sae_err = np.array([float(r['sae_err']) for r in rows])
-        ipr = np.array([float(r['ipr']) for r in rows])
         above_1pct = np.array([int(r['active_above_1pct']) for r in rows])
         above_10pct = np.array([int(r['active_above_10pct']) for r in rows])
         mean_above_1pct = np.array([float(r['mean_active_above_1pct']) for r in rows])
@@ -86,7 +116,7 @@ def main():
         if args.xlim:
             mask = (lam >= args.xlim[0]) & (lam <= args.xlim[1])
             lam, latent_dim, dead = lam[mask], latent_dim[mask], dead[mask]
-            mean_active, sae_err, ipr = mean_active[mask], sae_err[mask], ipr[mask]
+            mean_active, sae_err = mean_active[mask], sae_err[mask]
             above_1pct, above_10pct = above_1pct[mask], above_10pct[mask]
             mean_above_1pct, mean_above_10pct = mean_above_1pct[mask], mean_above_10pct[mask]
 
@@ -111,9 +141,6 @@ def main():
         # Panel 3: classification error
         ax_class.plot(lam, sae_err, '-o', color=c, label=f'Layer {layer}', markersize=4)
 
-        # Panel 4: effective features (IPR)
-        ax_ipr.plot(lam, ipr, '-o', color=c, label=f'Layer {layer}', markersize=4)
-
     # Baseline error reference line
     first_row = next(iter(by_layer.values()))[0]
     baseline_err = float(first_row['baseline_err'])
@@ -127,29 +154,29 @@ def main():
                        markersize=4, label=lbl)
             for ls, mk, lbl in thresh_styles
         ]
-        layer_handles, layer_labels = ax.get_legend_handles_labels()
+        layer_handles, _ = ax.get_legend_handles_labels()
         ax.legend(handles=layer_handles + thresh_handles, fontsize=8)
 
     panel_info = [
         (ax_ever,  'Ever-active features',   'Feature count'),
         (ax_mean,  'Mean active features',   'Mean active per token'),
         (ax_class, 'Classification error',   'Error rate'),
-        (ax_ipr,   'Effective features (IPR)', 'IPR'),
     ]
 
     for ax, title, ylabel in panel_info:
         ax.set_xscale('log')
+        if args.log_y and ax in (ax_ever, ax_mean):
+            ax.set_yscale('log')
         if args.xlim:
             ax.set_xlim(args.xlim)
-        ax.set_xlabel('λ₁', fontsize=11)
+        ax.set_xlabel('lambda_1', fontsize=11)
         ax.set_ylabel(ylabel, fontsize=11)
         ax.set_title(title, fontsize=12)
         ax.grid(True, which='both', linestyle='--', linewidth=0.4, alpha=0.6)
 
     ax_class.legend(fontsize=8)
-    ax_ipr.legend(fontsize=8)
 
-    fig.suptitle('SAE metrics vs λ₁', fontsize=14, y=1.01)
+    fig.suptitle(suptitle, fontsize=13, y=1.03)
     plt.tight_layout()
     plt.savefig(outfile, dpi=150, bbox_inches='tight')
     print(f'Figure saved to {outfile}')

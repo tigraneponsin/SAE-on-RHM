@@ -21,7 +21,7 @@
 # =============================================================================
 # USER: set these paths before submitting
 # =============================================================================
-SWEEP_DIR=/work/pcsl/ponsin/Mean_Transformer/SAE/sweep_round2_lambda
+SWEEP_DIR=/work/pcsl/ponsin/Mean_Transformer/SAE/2nd_generation/sweep_onetok0_layer0_lambda1_nowarm2
 REPO_DIR=/home/ponsin/SAE-on-RHM
 # =============================================================================
 

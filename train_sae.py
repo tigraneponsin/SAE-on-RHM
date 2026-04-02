@@ -7,6 +7,7 @@ import argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.append('~/rhm-training')
 
+import numpy as np
 import torch
 import torch.optim as optim
 
@@ -38,7 +39,7 @@ def _compute_activation_scale(model, train_loader, layer_id, activation_source,
     hook = model.blocks[layer_id].register_forward_hook(
         lambda _m, _i, o: buf.append(o.detach())
     )
-    sum_sq = 0.0
+    sum_norm = 0.0
     n_tokens = 0
     with torch.no_grad():
         for inputs, _ in train_loader:
@@ -56,16 +57,16 @@ def _compute_activation_scale(model, train_loader, layer_id, activation_source,
             act = act.reshape(-1, act.size(-1))
             if act.numel() == 0:
                 continue
-            sum_sq += float(act.pow(2).sum())
+            sum_norm += float(act.norm(dim=-1).sum())
             n_tokens += act.size(0)
     hook.remove()
 
     if n_tokens == 0:
         return 1.0
     embedding_dim = model.embedding_dim
-    mean_sq_norm = sum_sq / n_tokens           # E[||x||^2]
-    scale = (embedding_dim / mean_sq_norm) ** 0.5  # so E[||scale*x||^2] = n
-    print(f'  layer {layer_id}: mean ||x||_2 = {(mean_sq_norm ** 0.5):.4f}, '
+    mean_norm = sum_norm / n_tokens                          # E[||x||_2]
+    scale = (embedding_dim ** 0.5) / mean_norm              # so E[||scale*x||_2] = sqrt(n)
+    print(f'  layer {layer_id}: mean ||x||_2 = {mean_norm:.4f}, '
           f'embedding_dim = {embedding_dim}, act_scale = {scale:.6f}')
     return float(scale)
 
@@ -149,7 +150,11 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
     latent_dim = config.sae_latent_dim if config.sae_latent_dim is not None else 4 * model.embedding_dim
     batch_limit = config.sae_batch_limit if config.sae_batch_limit > 0 else None
     eval_chunk_tokens = batch_limit if batch_limit is not None else 4096
-    print_freq = max(config.sae_print_freq, 1)
+    n_log_points = max(int(config.sae_log_points), 2)
+    log_steps_set = set(
+        int(round(s)) for s in np.geomspace(1, config.sae_steps, n_log_points)
+    )
+    log_steps_set.add(config.sae_steps)
     activation_source = str(config.sae_activation_source).lower()
     assert activation_source in {'all_tokens', 'cls_token', 'one_token'}, (
         f"sae_activation_source={config.sae_activation_source} is invalid. "
@@ -171,13 +176,19 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
     lr_decay_frac = float(getattr(config, 'sae_lr_decay_frac', 0.2))
     act_scales = {}
 
+    no_act_scale = bool(getattr(config, 'no_act_scale', False))
+
     for layer_id in layer_ids:
         # --- Input normalization: compute scale so E[||scale*x||_2] = sqrt(n) ---
-        print(f'Computing activation scale for layer {layer_id} ...')
-        act_scale = _compute_activation_scale(
-            model, train_loader, layer_id, activation_source,
-            is_cls_model, token_idx, config.device,
-        )
+        if no_act_scale:
+            print(f'Skipping activation scale for layer {layer_id} (no_act_scale=True)')
+            act_scale = 1.0
+        else:
+            print(f'Computing activation scale for layer {layer_id} ...')
+            act_scale = _compute_activation_scale(
+                model, train_loader, layer_id, activation_source,
+                is_cls_model, token_idx, config.device,
+            )
         act_scales[layer_id] = act_scale
 
         sae = models.SparseAutoencoder(
@@ -278,7 +289,7 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
                     _, last_z = sae(act)
 
                 step += 1
-                if step % print_freq == 0 or step == config.sae_steps:
+                if step in log_steps_set:
                     curve_steps.append(step)
                     curve_total.append(last_total)
                     curve_recon.append(last_recon)
@@ -331,7 +342,10 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
             'sparse': eval_curve_sparse,
         }
 
-    return sae_state, sae_metrics, sae_curves, sae_eval_curves, layer_ids
+        del sae, optimizer
+        torch.cuda.empty_cache()
+
+    return sae_state, sae_metrics, sae_curves, sae_eval_curves, layer_ids, act_scales
 
 
 def _resolve_sae_output_name(args):
@@ -398,12 +412,13 @@ def run(args):
         'sae_lr': 1e-3,
         'sae_steps': 512,
         'sae_batch_limit': 0,
-        'sae_print_freq': 128,
+        'sae_log_points': 50,
         'sae_activation_source': 'all_tokens',
         'sae_token_idx': 0,
         'sae_sample_batch_size': int(config.batch_size),
         'sae_lambda_warmup_frac': 0.05,
         'sae_lr_decay_frac': 0.2,
+        'no_act_scale': False,
     }
     for key, val in defaults.items():
         if not hasattr(config, key):
@@ -418,7 +433,7 @@ def run(args):
         'sae_lr': args.sae_lr,
         'sae_steps': args.sae_steps,
         'sae_batch_limit': args.sae_batch_limit,
-        'sae_print_freq': args.sae_print_freq,
+        'sae_log_points': args.sae_log_points,
         'sae_activation_source': args.sae_activation_source,
         'sae_token_idx': args.sae_token_idx,
         'sae_sample_batch_size': args.sae_sample_batch_size,
@@ -428,6 +443,8 @@ def run(args):
     for key, val in overrides.items():
         if val is not None:
             setattr(config, key, val)
+    if args.no_act_scale:
+        config.no_act_scale = True
 
     # Optional single-layer mode for running independent SAE jobs per transformer layer.
     if args.sae_layer is not None:
@@ -501,7 +518,7 @@ def run(args):
     model.load_state_dict(model_state)
     model = model.to(config.device)
 
-    sae_state, sae_metrics, sae_curves, sae_eval_curves, layer_ids = train_sae_posthoc(
+    sae_state, sae_metrics, sae_curves, sae_eval_curves, layer_ids, act_scales = train_sae_posthoc(
         model, train_loader, config, eval_loader=eval_loader,
     )
 
@@ -573,13 +590,14 @@ if __name__ == '__main__':
     parser.add_argument('--sae_sample_batch_size', type=int, default=None, help='number of RHM samples per forward pass used to gather SAE activations')
     parser.add_argument('--sae_activation_source', type=str, default=None, help='which positions feed SAE: all_tokens, cls_token (transformer_class only), or one_token')
     parser.add_argument('--sae_token_idx', type=int, default=None, help='0-based index of the real token to use when sae_activation_source=one_token (counts from 0 among sequence tokens, i.e. skips [CLS] for transformer_class)')
-    parser.add_argument('--sae_print_freq', type=int, default=None, help='print frequency during SAE training')
+    parser.add_argument('--sae_log_points', type=int, default=None, help='number of log-spaced checkpoints to record during SAE training (default: 50)')
     parser.add_argument('--sae_train_size', type=int, default=None, help='number of RHM samples used to train SAE')
     parser.add_argument('--sae_eval_size', type=int, default=None, help='number of RHM samples reserved for later SAE analysis')
     parser.add_argument('--sae_train_seed_sample', type=int, default=None, help='seed_samples used for SAE training split (defaults to transformer seed + 1)')
     parser.add_argument('--sae_eval_seed_sample', type=int, default=None, help='seed_samples used for analysis split (defaults to train seed + 1)')
     parser.add_argument('--sae_lambda_warmup_frac', type=float, default=None, help='fraction of steps over which lambda is linearly warmed up from 0 (default: 0.05)')
     parser.add_argument('--sae_lr_decay_frac', type=float, default=None, help='fraction of steps over which LR is linearly decayed to 0 at the end of training (default: 0.2)')
+    parser.add_argument('--no_act_scale', action='store_true', default=False, help='disable activation rescaling (act_scale=1.0 for all layers)')
 
     args = parser.parse_args()
 
