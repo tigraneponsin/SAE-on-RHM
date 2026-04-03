@@ -1,6 +1,7 @@
 import os
 import sys
 import copy
+import itertools
 import argparse
 
 # Ensure root SAE-on-RHM init.py is imported, not from other sources
@@ -27,6 +28,24 @@ def parse_sae_layers(sae_layers, num_layers):
     return sorted(set(layers))
 
 
+def _select_tokens(act, activation_source, is_cls_model, token_idx):
+    """Select tokens from a (B, T, D) activation tensor based on source mode.
+
+    Returns a (B, T', D) tensor where T' depends on activation_source:
+      - 'cls_token': T'=1, the [CLS] position
+      - 'one_token': T'=1, a single real-token position (offset by 1 for CLS models)
+      - 'all_tokens': all real tokens (skipping [CLS] for CLS models)
+    """
+    if activation_source == 'cls_token':
+        return act[:, :1, :]
+    elif activation_source == 'one_token':
+        offset = 1 if is_cls_model else 0
+        return act[:, offset + token_idx : offset + token_idx + 1, :]
+    elif is_cls_model:
+        return act[:, 1:, :]
+    return act
+
+
 def _compute_activation_scale(model, train_loader, layer_id, activation_source,
                                is_cls_model, token_idx, device):
     """Compute a scalar scale so that E[||scale * x||_2] = sqrt(embedding_dim).
@@ -47,13 +66,7 @@ def _compute_activation_scale(model, train_loader, layer_id, activation_source,
             if not buf:
                 continue
             act = buf.pop(0)
-            if activation_source == 'cls_token':
-                act = act[:, :1, :]
-            elif activation_source == 'one_token':
-                offset = 1 if is_cls_model else 0
-                act = act[:, offset + token_idx : offset + token_idx + 1, :]
-            elif is_cls_model:
-                act = act[:, 1:, :]
+            act = _select_tokens(act, activation_source, is_cls_model, token_idx)
             act = act.reshape(-1, act.size(-1))
             if act.numel() == 0:
                 continue
@@ -99,26 +112,20 @@ def _collect_eval_loss(sae, model, eval_loader, layer_id, activation_source,
                        is_cls_model, token_idx, lambda_l1, device,
                        eval_chunk_tokens=None, act_scale=1.0):
     """Average SAE loss over the full eval_loader at the current SAE weights.
-    Returns (total, recon, sparse) averaged across all batches."""
+    Returns (total, recon, sparse) averaged across all eval tokens."""
     buf = []
     hook = model.blocks[layer_id].register_forward_hook(
         lambda _m, _i, o: buf.append(o.detach())
     )
     sum_total = sum_recon = sum_sparse = 0.0
-    n = 0
+    n_tokens = 0
     with torch.no_grad():
         for inputs, _ in eval_loader:
             model(inputs.to(device))
             if not buf:
                 continue
             act = buf.pop(0)
-            if activation_source == 'cls_token':
-                act = act[:, :1, :]
-            elif activation_source == 'one_token':
-                offset = 1 if is_cls_model else 0
-                act = act[:, offset + token_idx : offset + token_idx + 1, :]
-            elif is_cls_model:
-                act = act[:, 1:, :]
+            act = _select_tokens(act, activation_source, is_cls_model, token_idx)
             act = act.reshape(-1, act.size(-1))
             if act.numel() == 0:
                 continue
@@ -126,14 +133,15 @@ def _collect_eval_loss(sae, model, eval_loader, layer_id, activation_source,
             total, recon, sparse = _sae_loss_chunked(
                 sae, act, lambda_l1=lambda_l1, chunk_tokens=eval_chunk_tokens,
             )
-            sum_total += total
-            sum_recon += recon
-            sum_sparse += sparse
-            n += 1
+            bs = act.size(0)
+            sum_total += total * bs
+            sum_recon += recon * bs
+            sum_sparse += sparse * bs
+            n_tokens += bs
     hook.remove()
-    if n == 0:
+    if n_tokens == 0:
         return float('nan'), float('nan'), float('nan')
-    return sum_total / n, sum_recon / n, sum_sparse / n
+    return sum_total / n_tokens, sum_recon / n_tokens, sum_sparse / n_tokens
 
 
 def train_sae_posthoc(model, train_loader, config, eval_loader=None):
@@ -191,6 +199,8 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
             )
         act_scales[layer_id] = act_scale
 
+        # Seed SAE initialization for reproducibility across runs.
+        torch.manual_seed(int(config.seed_sample) + 1000 + layer_id)
         sae = models.SparseAutoencoder(
             input_dim=model.embedding_dim,
             latent_dim=latent_dim,
@@ -205,127 +215,115 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
         warmup_steps = int(lambda_warmup_frac * config.sae_steps)
         decay_start = int((1.0 - lr_decay_frac) * config.sae_steps)
 
-        step = 0
         last_total = last_recon = last_sparse = 0.0
-        last_z = None
+        last_act = None
         init_logged = False
         curve_steps, curve_total, curve_recon, curve_sparse = [], [], [], []
         eval_curve_steps, eval_curve_total, eval_curve_recon, eval_curve_sparse = [], [], [], []
 
-        while step < config.sae_steps:
-            for inputs, _ in train_loader:
+        loader_iter = iter(itertools.cycle(train_loader))
+        for step in range(config.sae_steps):
+            inputs, _ = next(loader_iter)
+            with torch.no_grad():
+                model(inputs.to(config.device))
+
+            if not activation_buffer:
+                continue
+
+            act = activation_buffer.pop(0)
+            act = _select_tokens(act, activation_source, is_cls_model, token_idx)
+            act = act.reshape(-1, act.size(-1))
+            act = act * act_scale
+
+            if batch_limit is not None and act.size(0) > batch_limit:
+                act = act[torch.randperm(act.size(0), device=act.device)[:batch_limit]]
+
+            # lambda warmup: ramp from 0 to sae_lambda_l1 over first warmup_steps
+            if warmup_steps > 0 and step < warmup_steps:
+                current_lambda = config.sae_lambda_l1 * (step / warmup_steps)
+            else:
+                current_lambda = config.sae_lambda_l1
+
+            if not init_logged:
                 with torch.no_grad():
-                    model(inputs.to(config.device))
-
-                if not activation_buffer:
-                    continue
-
-                # Token selection depends on architecture and activation_source:
-                # - transformer_class: [CLS] at position 0, real tokens at 1..T
-                # - transformer_meanclass: no [CLS], real tokens at 0..T-1
-                # For one_token: select a single real token by its 0-based index,
-                #   skipping [CLS] when present (offset=1 for transformer_class).
-                act = activation_buffer.pop(0)
-                if activation_source == 'cls_token':
-                    act = act[:, :1, :]
-                elif activation_source == 'one_token':
-                    offset = 1 if config.model == 'transformer_class' else 0
-                    act = act[:, offset + token_idx : offset + token_idx + 1, :]
-                elif config.model == 'transformer_class':
-                    act = act[:, 1:, :]
-                act = act.reshape(-1, act.size(-1))
-                act = act * act_scale
-
-                if batch_limit is not None and act.size(0) > batch_limit:
-                    act = act[torch.randperm(act.size(0), device=act.device)[:batch_limit]]
-
-                # λ warmup: ramp from 0 to sae_lambda_l1 over first warmup_steps
-                if warmup_steps > 0 and step < warmup_steps:
-                    current_lambda = config.sae_lambda_l1 * (step / warmup_steps)
-                else:
-                    current_lambda = config.sae_lambda_l1
-
-                if not init_logged:
-                    with torch.no_grad():
-                        init_total, init_recon, init_sparse = sae.loss(act, lambda_l1=0.0)
-                        _, init_z = sae(act)
-                    init_stats = sae.activation_stats(init_z)
-                    curve_steps.append(0)
-                    curve_total.append(float(init_total))
-                    curve_recon.append(float(init_recon))
-                    curve_sparse.append(float(init_sparse))
-                    if eval_loader is not None:
-                        ev_total, ev_recon, ev_sparse = _collect_eval_loss(
-                            sae, model, eval_loader, layer_id, activation_source,
-                            is_cls_model, token_idx, 0.0, config.device,
-                            eval_chunk_tokens=eval_chunk_tokens,
-                            act_scale=act_scale,
-                        )
-                        eval_curve_steps.append(0)
-                        eval_curve_total.append(ev_total)
-                        eval_curve_recon.append(ev_recon)
-                        eval_curve_sparse.append(ev_sparse)
-                    print(
-                        f'sae layer {layer_id} step 0/{config.sae_steps} '
-                        f'total={float(init_total):.6f} recon={float(init_recon):.6f} sparse={float(init_sparse):.6f} '
-                        f'active_fraction={init_stats["active_fraction"]:.6f} dead_features={init_stats["dead_features"]}'
+                    init_total, init_recon, init_sparse, init_z = sae.loss(act, lambda_l1=0.0, return_z=True)
+                init_stats = sae.activation_stats(init_z)
+                curve_steps.append(0)
+                curve_total.append(float(init_total))
+                curve_recon.append(float(init_recon))
+                curve_sparse.append(float(init_sparse))
+                if eval_loader is not None:
+                    ev_total, ev_recon, ev_sparse = _collect_eval_loss(
+                        sae, model, eval_loader, layer_id, activation_source,
+                        is_cls_model, token_idx, 0.0, config.device,
+                        eval_chunk_tokens=eval_chunk_tokens,
+                        act_scale=act_scale,
                     )
-                    init_logged = True
+                    eval_curve_steps.append(0)
+                    eval_curve_total.append(ev_total)
+                    eval_curve_recon.append(ev_recon)
+                    eval_curve_sparse.append(ev_sparse)
+                print(
+                    f'sae layer {layer_id} step 0/{config.sae_steps} '
+                    f'total={float(init_total):.6f} recon={float(init_recon):.6f} sparse={float(init_sparse):.6f} '
+                    f'active_fraction={init_stats["active_fraction"]:.6f} dead_features={init_stats["dead_features"]}'
+                )
+                init_logged = True
 
-                total_loss, recon_loss, sparse_loss = sae.loss(act, lambda_l1=current_lambda)
-                optimizer.zero_grad()
-                total_loss.backward()
-                optimizer.step()
+            total_loss, recon_loss, sparse_loss = sae.loss(act, lambda_l1=current_lambda)
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
 
-                # LR linear decay: ramp down to 0 over last lr_decay_frac of steps
-                if step >= decay_start:
-                    frac_remaining = 1.0 - (step - decay_start) / max(config.sae_steps - decay_start, 1)
-                    new_lr = config.sae_lr * max(frac_remaining, 0.0)
-                    for pg in optimizer.param_groups:
-                        pg['lr'] = new_lr
+            # LR linear decay: ramp down to 0 over last lr_decay_frac of steps
+            if step >= decay_start:
+                frac_remaining = 1.0 - (step - decay_start) / max(config.sae_steps - decay_start, 1)
+                new_lr = config.sae_lr * max(frac_remaining, 0.0)
+                for pg in optimizer.param_groups:
+                    pg['lr'] = new_lr
 
-                last_total, last_recon, last_sparse = float(total_loss), float(recon_loss), float(sparse_loss)
-                with torch.no_grad():
-                    _, last_z = sae(act)
+            last_total, last_recon, last_sparse = float(total_loss), float(recon_loss), float(sparse_loss)
+            last_act = act
 
-                step += 1
-                if step in log_steps_set:
-                    curve_steps.append(step)
-                    curve_total.append(last_total)
-                    curve_recon.append(last_recon)
-                    curve_sparse.append(last_sparse)
-                    if eval_loader is not None:
-                        ev_total, ev_recon, ev_sparse = _collect_eval_loss(
-                            sae, model, eval_loader, layer_id, activation_source,
-                            is_cls_model, token_idx, current_lambda, config.device,
-                            eval_chunk_tokens=eval_chunk_tokens,
-                            act_scale=act_scale,
-                        )
-                        eval_curve_steps.append(step)
-                        eval_curve_total.append(ev_total)
-                        eval_curve_recon.append(ev_recon)
-                        eval_curve_sparse.append(ev_sparse)
-                    print(
-                        f'sae layer {layer_id} step {step}/{config.sae_steps} '
-                        f'λ={current_lambda:.4g} '
-                        f'total={last_total:.6f} recon={last_recon:.6f} sparse={last_sparse:.6f}'
-                        + (f'  |  eval total={ev_total:.6f} recon={ev_recon:.6f} sparse={ev_sparse:.6f}'
-                           if eval_loader is not None else '')
+            if step + 1 in log_steps_set:
+                curve_steps.append(step + 1)
+                curve_total.append(last_total)
+                curve_recon.append(last_recon)
+                curve_sparse.append(last_sparse)
+                if eval_loader is not None:
+                    ev_total, ev_recon, ev_sparse = _collect_eval_loss(
+                        sae, model, eval_loader, layer_id, activation_source,
+                        is_cls_model, token_idx, current_lambda, config.device,
+                        eval_chunk_tokens=eval_chunk_tokens,
+                        act_scale=act_scale,
                     )
-
-                if step >= config.sae_steps:
-                    break
+                    eval_curve_steps.append(step + 1)
+                    eval_curve_total.append(ev_total)
+                    eval_curve_recon.append(ev_recon)
+                    eval_curve_sparse.append(ev_sparse)
+                print(
+                    f'sae layer {layer_id} step {step + 1}/{config.sae_steps} '
+                    f'lambda={current_lambda:.4g} '
+                    f'total={last_total:.6f} recon={last_recon:.6f} sparse={last_sparse:.6f}'
+                    + (f'  |  eval total={ev_total:.6f} recon={ev_recon:.6f} sparse={ev_sparse:.6f}'
+                       if eval_loader is not None else '')
+                )
 
         hook.remove()
 
-        stats = sae.activation_stats(last_z) if last_z is not None else {'active_fraction': 0.0, 'dead_features': latent_dim}
+        if last_act is not None:
+            with torch.no_grad():
+                _, last_z = sae(last_act)
+            stats = sae.activation_stats(last_z)
+        else:
+            stats = {'active_fraction': 0.0, 'dead_features': latent_dim}
         sae_metrics[layer_id] = {
             'total_loss': last_total,
             'recon_loss': last_recon,
             'sparse_loss': last_sparse,
             'active_fraction': stats['active_fraction'],
             'dead_features': stats['dead_features'],
-            'steps': step,
+            'steps': config.sae_steps,
             'latent_dim': latent_dim,
         }
         sae_state[layer_id] = copy.deepcopy(sae.state_dict())
@@ -457,10 +455,16 @@ def run(args):
     transformer_seed = int(config.seed_sample)
     sae_train_seed = args.sae_train_seed_sample if args.sae_train_seed_sample is not None else transformer_seed + 1
     if sae_train_seed == transformer_seed:
-        sae_train_seed = transformer_seed + 1
+        raise ValueError(
+            f'sae_train_seed_sample ({sae_train_seed}) must differ from '
+            f'transformer seed_sample ({transformer_seed}) to avoid data overlap.'
+        )
     sae_eval_seed = args.sae_eval_seed_sample if args.sae_eval_seed_sample is not None else sae_train_seed + 1
     if sae_eval_seed == sae_train_seed:
-        sae_eval_seed = sae_train_seed + 1
+        raise ValueError(
+            f'sae_eval_seed_sample ({sae_eval_seed}) must differ from '
+            f'sae_train_seed_sample ({sae_train_seed}) to keep train/eval disjoint.'
+        )
 
     print(
         f'SAE data split: train_size={sae_train_size} (seed_sample={sae_train_seed}), '

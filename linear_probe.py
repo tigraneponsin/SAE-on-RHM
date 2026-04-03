@@ -324,8 +324,15 @@ def train_probe(
 
             step += 1
             if verbose and step % 500 == 0:
-                acc = float((logits.argmax(dim=-1) == label_batch).float().mean())
-                print(f"  probe step {step}/{num_steps}  loss={float(loss):.4f}  batch_acc={acc:.4f}")
+                probe.eval()
+                train_result = eval_probe(probe, probe_data, device)
+                msg = (f"  step {step:>{len(str(num_steps))}}/{num_steps}"
+                       f"  train_loss={train_result.loss:.4f}  train_acc={train_result.accuracy:.4f}")
+                if eval_data is not None:
+                    val_result = eval_probe(probe, eval_data, device)
+                    msg += f"  val_loss={val_result.loss:.4f}  val_acc={val_result.accuracy:.4f}"
+                print(msg)
+                probe.train()
             if step >= num_steps:
                 break
 

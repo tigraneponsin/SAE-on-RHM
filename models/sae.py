@@ -37,13 +37,15 @@ class SparseAutoencoder(nn.Module):
         w_dec = self.decoder.weight
         return torch.sqrt((w_dec ** 2).sum(dim=0) + eps)
     
-    def loss(self, x, lambda_l1=5):
+    def loss(self, x, lambda_l1=5, return_z=False):
         recon, z = self(x)
         recon_loss = F.mse_loss(recon, x)
         #decoder weighted L1 penalty
         dec_norms = self.decoder_feature_norms()
         sparse_loss = (z.abs() * dec_norms.unsqueeze(0)).sum(dim=1).mean()
         total_loss = recon_loss + lambda_l1 * sparse_loss
+        if return_z:
+            return total_loss, recon_loss, sparse_loss, z
         return total_loss, recon_loss, sparse_loss
 
     @torch.no_grad()

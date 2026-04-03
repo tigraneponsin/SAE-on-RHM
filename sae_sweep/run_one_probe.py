@@ -64,13 +64,28 @@ def _resolve_rules(blob: dict, source_label: str):
     )
 
 
-def _normalize_model_state_dict_keys(state_dict):
-    """Strip torch.compile wrapper prefix from checkpoint state dict keys."""
+def _align_model_state_dict_keys(model, state_dict):
+    """Align checkpoint key prefix style with the instantiated model.
+
+    Some artifacts use torch.compile wrappers and store keys with the
+    ``_orig_mod.`` prefix, while others do not. The runtime model can be in
+    either form too, so we adapt checkpoint keys to the model's expected style.
+    """
     if not isinstance(state_dict, dict):
         return state_dict
-    keys = list(state_dict.keys())
-    if keys and all(k.startswith('_orig_mod.') for k in keys):
+
+    src_keys = list(state_dict.keys())
+    dst_keys = list(model.state_dict().keys())
+    if not src_keys or not dst_keys:
+        return state_dict
+
+    src_pref = all(k.startswith('_orig_mod.') for k in src_keys)
+    dst_pref = all(k.startswith('_orig_mod.') for k in dst_keys)
+
+    if src_pref and not dst_pref:
         return {k[len('_orig_mod.'):]: v for k, v in state_dict.items()}
+    if dst_pref and not src_pref:
+        return {f'_orig_mod.{k}': v for k, v in state_dict.items()}
     return state_dict
 
 
@@ -133,7 +148,7 @@ def main():
     rules = _resolve_rules(blob, args.train_output)
 
     model = init.init_model(cfg)
-    model_state = _normalize_model_state_dict_keys(blob['output']['model'])
+    model_state = _align_model_state_dict_keys(model, blob['output']['model'])
     model.load_state_dict(model_state)
     model = model.to(device).eval()
     for p in model.parameters():
