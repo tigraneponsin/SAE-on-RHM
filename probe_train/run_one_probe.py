@@ -1,11 +1,7 @@
 """Train a linear probe on a transformer checkpoint and save the result.
 
-This is the standalone entry point for probe training, analogous to
-train_sae.py for SAE training.  It can be submitted directly via Slurm
-or called from a sweep script.
-
 Usage:
-    python sae_sweep/run_one_probe.py \\
+    python probe_train/run_one_probe.py \\
         --train_output /path/to/transformer.pt \\
         --layer 0 \\
         --token_idx 0 \\
@@ -23,78 +19,32 @@ The script:
   4. Trains a linear probe on clean residual stream activations.
   5. Evaluates the probe on a held-out eval split.
   6. Saves the trained probe and results to --outname.
+
+Probe file saved as:
+    probe_layer{layer}_tok{token_idx}__{transformer_stem}.pt
+next to the transformer checkpoint (or at --outname if provided).
 """
 
 import argparse
-import copy
 import sys
 from pathlib import Path
 
 import torch
 
 # ---------------------------------------------------------------------------
-REPO_ROOT = Path(__file__).resolve().parent.parent
+PROBE_TRAIN_DIR = Path(__file__).resolve().parent
+REPO_ROOT = PROBE_TRAIN_DIR.parent
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(PROBE_TRAIN_DIR))
 
-import init
-from datasets.random_hierarchy_model import sample_rules, sample_trees
+from probe_utils import load_transformer, prepare_inputs
+from datasets.random_hierarchy_model import sample_trees
 from linear_probe import (
     collect_probe_data,
-    eval_probe,
     normalized_identification_error,
     probe_target_level,
     train_probe,
 )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _resolve_rules(blob: dict, source_label: str):
-    rules = blob.get('output', {}).get('rules', None)
-    if rules is not None:
-        return rules
-    cfg = blob.get('config', None)
-    if cfg is None:
-        raise ValueError(f'{source_label}: no saved rules and no config')
-    return sample_rules(
-        cfg.num_features, cfg.num_classes, cfg.num_synonyms,
-        cfg.tuple_size, cfg.num_layers, seed=cfg.seed_rules,
-    )
-
-
-def _align_model_state_dict_keys(model, state_dict):
-    """Align checkpoint key prefix style with the instantiated model.
-
-    Some artifacts use torch.compile wrappers and store keys with the
-    ``_orig_mod.`` prefix, while others do not. The runtime model can be in
-    either form too, so we adapt checkpoint keys to the model's expected style.
-    """
-    if not isinstance(state_dict, dict):
-        return state_dict
-
-    src_keys = list(state_dict.keys())
-    dst_keys = list(model.state_dict().keys())
-    if not src_keys or not dst_keys:
-        return state_dict
-
-    src_pref = all(k.startswith('_orig_mod.') for k in src_keys)
-    dst_pref = all(k.startswith('_orig_mod.') for k in dst_keys)
-
-    if src_pref and not dst_pref:
-        return {k[len('_orig_mod.'):]: v for k, v in state_dict.items()}
-    if dst_pref and not src_pref:
-        return {f'_orig_mod.{k}': v for k, v in state_dict.items()}
-    return state_dict
-
-
-def _prepare_inputs(trees, cfg):
-    num_rhm_levels = cfg.num_layers
-    data_cfg = copy.deepcopy(cfg)
-    data_cfg.train_size = trees[num_rhm_levels].size(0)
-    data_cfg.test_size = 0
-    return init.transform_inputs(trees[num_rhm_levels], data_cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -142,17 +92,7 @@ def main():
     # 1. Load transformer
     # ------------------------------------------------------------------
     print(f'Loading transformer from: {args.train_output}')
-    blob = torch.load(args.train_output, map_location='cpu')
-    cfg = copy.deepcopy(blob['config'])
-    cfg.device = device_str  # override stored device
-    rules = _resolve_rules(blob, args.train_output)
-
-    model = init.init_model(cfg)
-    model_state = _align_model_state_dict_keys(model, blob['output']['model'])
-    model.load_state_dict(model_state)
-    model = model.to(device).eval()
-    for p in model.parameters():
-        p.requires_grad = False
+    model, cfg, rules = load_transformer(args.train_output, device_str)
 
     L = cfg.num_layers
     s = cfg.tuple_size
@@ -176,8 +116,8 @@ def main():
     print(f'Generating probe data: train={args.probe_train_size}, eval={args.probe_eval_size}')
     train_trees = sample_trees(num_data=args.probe_train_size, rules=rules, seed=args.probe_train_seed)
     eval_trees = sample_trees(num_data=args.probe_eval_size, rules=rules, seed=args.probe_eval_seed)
-    train_inputs = _prepare_inputs(train_trees, cfg)
-    eval_inputs = _prepare_inputs(eval_trees, cfg)
+    train_inputs = prepare_inputs(train_trees, cfg)
+    eval_inputs = prepare_inputs(eval_trees, cfg)
 
     # ------------------------------------------------------------------
     # 4. Collect activations
@@ -224,8 +164,8 @@ def main():
     # ------------------------------------------------------------------
     if args.outname is None:
         stem = Path(args.train_output).stem
-        out_dir = Path(args.train_output).parent
-        args.outname = str(out_dir / f'probe_layer{args.layer}_tok{args.token_idx}_{stem}.pt')
+        out_dir = Path(args.train_output).parent / 'probes'
+        args.outname = str(out_dir / f'probe_layer{args.layer}_tok{args.token_idx}__{stem}.pt')
 
     Path(args.outname).parent.mkdir(parents=True, exist_ok=True)
 

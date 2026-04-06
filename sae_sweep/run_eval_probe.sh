@@ -1,15 +1,19 @@
 #!/bin/bash
 # =============================================================================
-# Slurm script to evaluate linear probes on SAE-reconstructed activations.
+# Slurm script to evaluate pre-trained linear probes on SAE-reconstructed
+# activations.
 #
 # Usage:
 #   sbatch sae_sweep/run_eval_probe.sh
 #
 # For each SAE checkpoint in SWEEP_DIR, this:
-#   1. Trains a linear probe on clean activations at the SAE's (layer, token).
-#   2. Evaluates the probe on clean eval data (upper bound).
-#   3. Evaluates the same probe on SAE-reconstructed eval data.
+#   1. Loads the pre-trained probe for the SAE's (layer, token) pair from PROBE_DIR.
+#   2. Sanity-checks the probe against fresh clean eval activations.
+#   3. Evaluates the probe on SAE-reconstructed eval activations.
 #   4. Reports clean_acc vs recon_acc and the accuracy drop.
+#
+# Pre-train probes first with:
+#   sbatch probe_train/run_train_all_probes.sh
 # =============================================================================
 
 # -- Job metadata -------------------------------------------------------------
@@ -27,8 +31,11 @@
 # =============================================================================
 # USER: set these paths before submitting
 # =============================================================================
-SWEEP_DIR=/work/pcsl/ponsin/Mean_Transformer/SAE/2nd_generation/sweep_onetok0_layer0_lambda1_nowarm_noscale
+SWEEP_DIR=/work/pcsl/ponsin/Mean_Transformer/SAE/2nd_generation/sweep_onetok0_layer0_lambda1_nowarm2
 REPO_DIR=/home/ponsin/SAE-on-RHM
+# Directory containing pre-trained probe .pt files.
+# Default: same directory as the transformer checkpoint (next to it).
+PROBE_DIR=/work/pcsl/ponsin/Mean_Transformer/Transformer_for_SAE/v_16_L_3_m_4/probes
 # =============================================================================
 
 #SBATCH -o %x_%j.out
@@ -45,14 +52,13 @@ echo "======================================================================"
 echo "Job:        ${SLURM_JOB_ID}"
 echo "Node:       ${SLURMD_NODENAME}"
 echo "SWEEP_DIR:  ${SWEEP_DIR}"
+echo "PROBE_DIR:  ${PROBE_DIR}"
 echo "======================================================================"
 
 srun python "${REPO_DIR}/sae_sweep/eval_probe.py" \
     --sweep_dir "${SWEEP_DIR}" \
-    --probe_train_size 8192 \
+    --probe_dir "${PROBE_DIR}" \
     --probe_eval_size 4096 \
-    --probe_steps 2000 \
-    --probe_lr 1e-3 \
     --outcsv "${SWEEP_DIR}/probe_results.csv"
 
 EXIT_CODE=$?

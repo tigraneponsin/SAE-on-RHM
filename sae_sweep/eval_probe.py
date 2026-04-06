@@ -1,28 +1,28 @@
-"""Evaluate linear probes on clean and SAE-reconstructed activations.
+"""Evaluate pre-trained linear probes on SAE-reconstructed activations.
 
 For every SAE .pt checkpoint in --sweep_dir this script:
-  1. Infers the probe target hierarchy level from the SAE's transformer layer
-     (level = L - 1 - k, where k is the transformer layer index).
-  2. Generates fresh RHM data (separate train / eval seeds).
-  3. Trains a linear probe on clean residual stream activations.
-  4. Evaluates the probe on clean eval activations (upper bound).
-  5. Evaluates the same probe on SAE-reconstructed eval activations.
-  6. Reports clean_acc, recon_acc, and the accuracy drop.
+  1. Finds the pre-trained probe for the SAE's (layer, token) pair in --probe_dir.
+  2. Runs a sanity check: evaluates the probe on fresh clean eval activations and
+     warns if the accuracy deviates more than 0.005 from the saved value.
+  3. Evaluates the same probe on SAE-reconstructed eval activations.
+  4. Reports clean_acc vs recon_acc and the accuracy drop.
+
+Pre-trained probes must be produced by probe_train/run_one_probe.py or
+probe_train/train_all_probes.py and follow the naming convention:
+    probe_layer{layer}_tok{token_idx}__{transformer_stem}.pt
 
 Usage:
     python sae_sweep/eval_probe.py \\
         --sweep_dir /path/to/sweep/output/ \\
-        [--probe_train_size 8192] \\
-        [--probe_eval_size 8192] \\
-        [--probe_steps 2000] \\
-        [--probe_lr 1e-3] \\
+        --probe_dir /path/to/transformer/checkpoint/dir/ \\
+        [--probe_eval_size 4096] \\
+        [--probe_eval_seed 88888] \\
         [--batch_size 256] \\
         [--device cuda] \\
         [--outcsv /path/to/probe_results.csv]
 """
 
 import argparse
-import copy
 import csv
 import sys
 from pathlib import Path
@@ -30,55 +30,30 @@ from pathlib import Path
 import torch
 
 # ---------------------------------------------------------------------------
-# Add the repo root to sys.path
-# ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PROBE_TRAIN_DIR = REPO_ROOT / 'probe_train'
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(PROBE_TRAIN_DIR))
 
-import init
 import models
-from datasets.random_hierarchy_model import sample_rules, sample_trees
+from datasets.random_hierarchy_model import sample_trees
 from linear_probe import (
-    ProbeData,
+    LinearProbe,
     collect_probe_data,
     eval_probe,
     normalized_identification_error,
     probe_target_level,
-    train_probe,
 )
+from probe_utils import load_transformer, prepare_inputs
 
 
 # ---------------------------------------------------------------------------
-# Helpers (adapted from eval_sweep.py)
+# SAE loading
 # ---------------------------------------------------------------------------
 
-def _resolve_rules(blob: dict, source_label: str):
-    rules = blob.get('output', {}).get('rules', None)
-    cfg = blob.get('config', None)
-
-    if rules is not None:
-        return rules, 'artifact'
-
-    if cfg is None:
-        raise ValueError(
-            f'{source_label}: no saved rules and no config to regenerate from.'
-        )
-    missing = [a for a in ('num_features', 'num_classes', 'num_synonyms',
-                            'tuple_size', 'num_layers', 'seed_rules')
-               if not hasattr(cfg, a)]
-    if missing:
-        raise ValueError(
-            f'{source_label}: cannot regenerate rules -- config missing: {missing}'
-        )
-    rules = sample_rules(
-        cfg.num_features, cfg.num_classes, cfg.num_synonyms,
-        cfg.tuple_size, cfg.num_layers, seed=cfg.seed_rules,
-    )
-    return rules, 'seed_rules_resampled'
-
-
-def _load_sae(ckpt_path: str, input_dim: int, device: str):
-    ckpt = torch.load(ckpt_path, map_location='cpu')
+def _parse_sae_metadata(ckpt_path: str):
+    """Read SAE checkpoint metadata without instantiating the SAE model."""
+    ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
     if 'sae_state' not in ckpt or 'sae_layers' not in ckpt:
         return None
 
@@ -94,12 +69,6 @@ def _load_sae(ckpt_path: str, input_dim: int, device: str):
         return None
 
     latent_dim = int(metrics.get('latent_dim') or state['encoder.weight'].shape[0])
-    sae = models.SparseAutoencoder(input_dim=input_dim, latent_dim=latent_dim)
-    sae.load_state_dict(state)
-    sae = sae.to(device).eval()
-    for p in sae.parameters():
-        p.requires_grad = False
-
     setup = ckpt.get('sae_training_setup', {})
     source = ckpt.get('source', {})
 
@@ -113,7 +82,6 @@ def _load_sae(ckpt_path: str, input_dim: int, device: str):
     return {
         'layer_id': layer_id,
         'latent_dim': latent_dim,
-        'sae': sae,
         'train_output': source.get('train_output', ''),
         'ckpt_path': ckpt_path,
         'sae_token_idx': int(setup.get('sae_token_idx', 0)),
@@ -124,34 +92,56 @@ def _load_sae(ckpt_path: str, input_dim: int, device: str):
     }
 
 
-def _align_model_state_dict_keys(model, state_dict):
-    """Align checkpoint key prefix style with the instantiated model."""
-    if not isinstance(state_dict, dict):
-        return state_dict
+def _load_sae(ckpt_path: str, input_dim: int, device: str):
+    """Instantiate the SAE model from a checkpoint with the correct input_dim."""
+    meta = _parse_sae_metadata(ckpt_path)
+    if meta is None:
+        return None
 
-    src_keys = list(state_dict.keys())
-    dst_keys = list(model.state_dict().keys())
-    if not src_keys or not dst_keys:
-        return state_dict
+    layer_id = meta['layer_id']
+    ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+    state = ckpt['sae_state'].get(layer_id) or ckpt['sae_state'].get(str(layer_id))
 
-    src_pref = all(k.startswith('_orig_mod.') for k in src_keys)
-    dst_pref = all(k.startswith('_orig_mod.') for k in dst_keys)
+    sae = models.SparseAutoencoder(input_dim=input_dim, latent_dim=meta['latent_dim'])
+    sae.load_state_dict(state)
+    sae = sae.to(device).eval()
+    for p in sae.parameters():
+        p.requires_grad = False
 
-    if src_pref and not dst_pref:
-        return {k[len('_orig_mod.'):]: v for k, v in state_dict.items()}
-    if dst_pref and not src_pref:
-        return {f'_orig_mod.{k}': v for k, v in state_dict.items()}
-    return state_dict
+    meta['sae'] = sae
+    return meta
 
 
-def _prepare_inputs(trees, cfg):
-    """Transform leaf tokens into model-ready inputs (same as init.transform_inputs)."""
-    num_rhm_levels = cfg.num_layers
-    raw_inputs = trees[num_rhm_levels]  # leaf level
-    data_cfg = copy.deepcopy(cfg)
-    data_cfg.train_size = raw_inputs.size(0)
-    data_cfg.test_size = 0
-    return init.transform_inputs(raw_inputs, data_cfg)
+# ---------------------------------------------------------------------------
+# Probe loading
+# ---------------------------------------------------------------------------
+
+def _find_probe(probe_dir: Path, layer_id: int, token_idx: int,
+                transformer_stem: str) -> Path:
+    """Return the path of the pre-trained probe for (layer_id, token_idx).
+
+    Raises FileNotFoundError with a helpful message if not found.
+    """
+    name = f'probe_layer{layer_id}_tok{token_idx}__{transformer_stem}.pt'
+    path = probe_dir / name
+    if not path.exists():
+        raise FileNotFoundError(
+            f'Pre-trained probe not found: {path}\n'
+            f'Run probe_train/run_one_probe.py or probe_train/train_all_probes.py first.'
+        )
+    return path
+
+
+def _load_probe(probe_path: Path, embedding_dim: int, num_classes: int,
+                device: str):
+    """Load a saved probe and return (LinearProbe, saved_clean_acc, chance_acc)."""
+    blob = torch.load(probe_path, map_location='cpu', weights_only=False)
+    probe = LinearProbe(input_dim=embedding_dim, num_classes=num_classes)
+    probe.load_state_dict(blob['probe_state'])
+    probe = probe.to(device).eval()
+    saved_clean_acc = float(blob['probe_result']['accuracy'])
+    chance_acc = float(blob['probe_result']['chance_accuracy'])
+    return probe, saved_clean_acc, chance_acc
 
 
 # ---------------------------------------------------------------------------
@@ -165,22 +155,15 @@ def main():
     )
     parser.add_argument('--sweep_dir', required=True,
                         help='Directory containing SAE .pt checkpoints')
-    parser.add_argument('--probe_train_size', type=int, default=8192,
-                        help='Number of RHM samples for probe training (default: 8192)')
-    parser.add_argument('--probe_eval_size', type=int, default=8192,
-                        help='Number of RHM samples for probe evaluation (default: 8192)')
-    parser.add_argument('--probe_train_seed', type=int, default=77777,
-                        help='RHM seed for probe training data (default: 77777)')
+    parser.add_argument('--probe_dir', type=str, default=None,
+                        help='Directory containing pre-trained probe .pt files '
+                             '(default: same directory as the transformer checkpoint)')
+    parser.add_argument('--probe_eval_size', type=int, default=4096,
+                        help='Number of RHM samples for probe evaluation (default: 4096)')
     parser.add_argument('--probe_eval_seed', type=int, default=88888,
                         help='RHM seed for probe eval data (default: 88888)')
-    parser.add_argument('--probe_steps', type=int, default=2000,
-                        help='Number of Adam steps to train the probe (default: 2000)')
-    parser.add_argument('--probe_lr', type=float, default=1e-3,
-                        help='Probe learning rate (default: 1e-3)')
-    parser.add_argument('--probe_batch_size', type=int, default=256,
-                        help='Probe training batch size (default: 256)')
     parser.add_argument('--batch_size', type=int, default=256,
-                        help='Batch size for forward passes through the transformer (default: 256)')
+                        help='Batch size for transformer forward passes (default: 256)')
     parser.add_argument('--device', type=str, default=None,
                         help='Device (default: cuda if available, else cpu)')
     parser.add_argument('--outcsv', type=str, default=None,
@@ -197,18 +180,17 @@ def main():
         sys.exit(0)
 
     print(f'Found {len(ckpt_files)} checkpoint file(s) in {sweep_dir}')
-    print(f'Probe: train_size={args.probe_train_size}, eval_size={args.probe_eval_size}, '
-          f'steps={args.probe_steps}, lr={args.probe_lr}, device={device_str}')
+    print(f'Eval: eval_size={args.probe_eval_size}, device={device_str}')
     print()
 
-    # Parse all valid SAE checkpoints (without loading the SAE model yet)
+    # Parse all valid SAE checkpoints (metadata only, no model instantiation)
     records = []
     for ckpt_file in ckpt_files:
-        entry = _load_sae(str(ckpt_file), input_dim=1, device='cpu')  # dummy load
-        if entry is None:
+        meta = _parse_sae_metadata(str(ckpt_file))
+        if meta is None:
             print(f'  Skipping (not a valid single-layer SAE checkpoint): {ckpt_file.name}')
         else:
-            records.append(entry)
+            records.append(meta)
 
     if not records:
         print('No valid SAE checkpoints found.')
@@ -224,16 +206,7 @@ def main():
     for train_output_path, group in by_transformer.items():
         print(f'Loading transformer from: {train_output_path}')
         try:
-            blob = torch.load(train_output_path, map_location='cpu')
-            cfg = copy.deepcopy(blob['config'])
-            rules, rules_source = _resolve_rules(blob, train_output_path)
-
-            model = init.init_model(cfg)
-            model_state = _align_model_state_dict_keys(model, blob['output']['model'])
-            model.load_state_dict(model_state)
-            model = model.to(device).eval()
-            for p in model.parameters():
-                p.requires_grad = False
+            model, cfg, rules = load_transformer(train_output_path, device_str)
         except Exception as exc:
             print(f'  ERROR loading transformer: {exc}')
             for r in group:
@@ -243,18 +216,18 @@ def main():
         num_rhm_levels = cfg.num_layers
         tuple_size = cfg.tuple_size
         model_name = cfg.model
+        trf_stem = Path(train_output_path).stem
         print(f'  model={model_name}, L={num_rhm_levels}, s={tuple_size}, '
               f'v={cfg.num_features}, n={cfg.num_classes}, m={cfg.num_synonyms}')
 
-        # Generate probe train and eval data
-        train_trees = sample_trees(
-            num_data=args.probe_train_size, rules=rules, seed=args.probe_train_seed,
-        )
+        # Determine probe directory
+        probe_dir = Path(args.probe_dir) if args.probe_dir else Path(train_output_path).parent
+
+        # Generate eval data (shared across all SAE checkpoints for this transformer)
         eval_trees = sample_trees(
             num_data=args.probe_eval_size, rules=rules, seed=args.probe_eval_seed,
         )
-        train_inputs = _prepare_inputs(train_trees, cfg).to('cpu')
-        eval_inputs = _prepare_inputs(eval_trees, cfg).to('cpu')
+        eval_inputs = prepare_inputs(eval_trees, cfg)
 
         # Process each SAE checkpoint for this transformer
         for r in group:
@@ -284,20 +257,34 @@ def main():
                 })
                 continue
 
-            if target_level == 0:
-                num_target_classes = cfg.num_classes
-            else:
-                num_target_classes = cfg.num_features
+            num_target_classes = cfg.num_classes if target_level == 0 else cfg.num_features
             chance_acc = 1.0 / num_target_classes
 
             print(f'  {Path(ckpt_path).name}: layer={layer_id}, token={token_idx}, '
                   f'target_level={target_level} ({num_target_classes} classes, '
                   f'chance={chance_acc:.4f})')
 
-            # Reload SAE with correct input_dim
+            # Load pre-trained probe
             try:
-                entry = _load_sae(ckpt_path, input_dim=model.embedding_dim, device=device_str)
-                sae = entry['sae']
+                probe_path = _find_probe(probe_dir, layer_id, token_idx, trf_stem)
+                probe, saved_clean_acc, _ = _load_probe(
+                    probe_path, model.embedding_dim, num_target_classes, device_str
+                )
+                print(f'    Probe loaded: {probe_path.name}  '
+                      f'(saved clean_acc={saved_clean_acc:.4f})')
+            except Exception as exc:
+                print(f'    ERROR loading probe: {exc}')
+                rows.append({
+                    'ckpt': Path(ckpt_path).name, 'layer': layer_id,
+                    'error': str(exc),
+                })
+                continue
+
+            # Load SAE with correct input_dim
+            try:
+                sae_entry = _load_sae(ckpt_path, input_dim=model.embedding_dim,
+                                      device=device_str)
+                sae = sae_entry['sae']
             except Exception as exc:
                 print(f'    ERROR loading SAE: {exc}')
                 rows.append({
@@ -306,17 +293,7 @@ def main():
                 })
                 continue
 
-            # Collect clean training activations
-            print(f'    Collecting clean training activations ...')
-            probe_train = collect_probe_data(
-                model, train_inputs, train_trees,
-                layer_id=layer_id, token_idx=token_idx, model_name=model_name,
-                hierarchy_level=target_level, tuple_size=tuple_size,
-                num_rhm_levels=num_rhm_levels, device=device,
-                act_scale=1.0, sae=None, batch_size=args.batch_size,
-            )
-
-            # Collect clean eval activations
+            # Collect clean eval activations (used for sanity check)
             print(f'    Collecting clean eval activations ...')
             probe_eval_clean = collect_probe_data(
                 model, eval_inputs, eval_trees,
@@ -326,23 +303,18 @@ def main():
                 act_scale=1.0, sae=None, batch_size=args.batch_size,
             )
 
-            # Train probe
-            print(f'    Training probe ({args.probe_steps} steps) ...')
-            probe, clean_result = train_probe(
-                probe_train,
-                lr=args.probe_lr,
-                num_steps=args.probe_steps,
-                batch_size=args.probe_batch_size,
-                device=device,
-                eval_data=probe_eval_clean,
-                verbose=False,
-            )
+            # Sanity check: verify probe accuracy matches saved value
+            clean_result = eval_probe(probe, probe_eval_clean, device)
             clean_id_error_norm = normalized_identification_error(
                 clean_result.accuracy, chance_acc
             )
-            print(f'    Clean eval: acc={clean_result.accuracy:.4f}  '
-                  f'loss={clean_result.loss:.4f}  '
-                  f'id_err_norm={clean_id_error_norm:.4f}')
+            delta = abs(clean_result.accuracy - saved_clean_acc)
+            sanity_msg = f'    Sanity check: clean_acc={clean_result.accuracy:.4f}  ' \
+                         f'saved={saved_clean_acc:.4f}  delta={delta:.4f}'
+            if delta > 0.005:
+                print(sanity_msg + '  WARNING: delta > 0.005 -- probe may not match this transformer')
+            else:
+                print(sanity_msg + '  OK')
 
             # Collect SAE-reconstructed eval activations
             print(f'    Collecting SAE-reconstructed eval activations ...')
@@ -362,8 +334,8 @@ def main():
             )
             id_error_norm_delta = recon_id_error_norm - clean_id_error_norm
             print(f'    Recon eval: acc={recon_result.accuracy:.4f}  '
-                f'loss={recon_result.loss:.4f}  drop={acc_drop:.4f}  '
-                f'id_err_norm={recon_id_error_norm:.4f}')
+                  f'loss={recon_result.loss:.4f}  drop={acc_drop:.4f}  '
+                  f'id_err_norm={recon_id_error_norm:.4f}')
 
             cfg_s = r.get('config', None)
             rows.append({
