@@ -27,7 +27,7 @@ import optuna
 import datasets
 import init
 from datasets.random_hierarchy_model import sample_trees
-from train_sae import _load_training_artifacts, train_sae_posthoc
+from notebooks.train_sae import _load_training_artifacts, train_sae_posthoc
 
 
 # ---------------------------------------------------------------------------
