@@ -235,7 +235,7 @@ def main():
             'sae_sample_batch_size': int(raw['sae_sample_batch_size']),
             'sae_batch_limit': int(raw['sae_batch_limit']),
             'sae_activation_source': activation_source,
-            'sae_token_idx': int(token_idx),
+            **({'sae_token_idx': int(token_idx)} if activation_source == 'one_token' else {}),
             'sae_train_size': int(raw['sae_train_size']),
             'sae_eval_size': int(eval_size),
             'sae_log_points': int(pf),

@@ -65,7 +65,6 @@ def main():
         '--sae_sample_batch_size', str(c['sae_sample_batch_size']),
         '--sae_batch_limit', str(c['sae_batch_limit']),
         '--sae_activation_source', c['sae_activation_source'],
-        '--sae_token_idx', str(c['sae_token_idx']),
         '--sae_train_size', str(c['sae_train_size']),
         '--sae_eval_size', str(c['sae_eval_size']),
         '--sae_log_points', str(c['sae_log_points']),
@@ -74,6 +73,8 @@ def main():
     ]
     if c['sae_latent_dim'] is not None:
         cmd += ['--sae_latent_dim', str(c['sae_latent_dim'])]
+    if 'sae_token_idx' in c:
+        cmd += ['--sae_token_idx', str(c['sae_token_idx'])]
     if c.get('no_act_scale', False):
         cmd += ['--no_act_scale']
     if args.device is not None:
