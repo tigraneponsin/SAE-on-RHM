@@ -272,14 +272,15 @@ def init_training( model, args):
     criterion = nn.CrossEntropyLoss( reduction='mean')
     #TODO: add other criteria
     
+    weight_decay = getattr(args, 'weight_decay', 0.0)
+
     if args.optim == 'sgd':
         optimizer = optim.SGD(
-            model.parameters(), lr=args.lr, momentum=args.momentum
+            model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=weight_decay
         )
-    #TODO: add arg for weight decay?
-    elif args.optim =='adam':
+    elif args.optim == 'adam':
         optimizer = optim.AdamW(
-            model.parameters(), lr=args.lr, weight_decay=0.
+            model.parameters(), lr=args.lr, weight_decay=weight_decay
         )
     else:
         raise ValueError("optimizer is invalid (sgd, adam)!")

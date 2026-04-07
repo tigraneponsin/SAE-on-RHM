@@ -50,6 +50,35 @@ def _load_probe_csv(path):
     return dict(by_pair)
 
 
+def _build_suptitle(sweep_data, probe_data, layers):
+    """Build a contextual figure title from mode/token_idx in the sweep CSV rows."""
+    all_sweep_rows = [r for rows in sweep_data.values() for r in rows]
+    modes = sorted(set(r.get('mode', 'all_tokens') for r in all_sweep_rows))
+    token_idxs = sorted(set(
+        r.get('token_idx', '')
+        for r in all_sweep_rows
+        if r.get('token_idx') not in ('', None, 'None')
+    ))
+
+    if len(modes) == 1:
+        mode_str = modes[0]
+        if mode_str == 'one_token' and len(token_idxs) == 1:
+            mode_label = f'one_token (tok={token_idxs[0]})'
+        elif mode_str == 'one_token':
+            mode_label = f'one_token (tok={",".join(token_idxs)})'
+        else:
+            mode_label = mode_str
+    else:
+        mode_label = ','.join(modes)
+
+    if len(layers) == 1:
+        layer_label = f'Layer {layers[0]}'
+    else:
+        layer_label = f'Layers {",".join(str(l) for l in layers)}'
+
+    return f'SAE metrics vs lambda_1  |  {layer_label}  |  {mode_label}'
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -74,6 +103,8 @@ def main():
     layers = sorted(sweep_data.keys())
     colors = plt.cm.tab10(np.linspace(0, 1, max(len(layers), 1)))
     layer_color = {l: colors[i] for i, l in enumerate(layers)}
+
+    suptitle = _build_suptitle(sweep_data, probe_data, layers)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     ax_ever  = axes[0]
@@ -177,6 +208,7 @@ def main():
 
     ax_probe.legend(fontsize=8)
 
+    fig.suptitle(suptitle, fontsize=13, y=1.03)
     plt.tight_layout()
     plt.savefig(outfile, dpi=150, bbox_inches='tight')
     print(f'Figure saved to {outfile}')

@@ -249,6 +249,7 @@ parser.add_argument('--warmup_time', type=int, default=None, help='required by c
 parser.add_argument('--decay_time', type=int, default=None, help='required by cosine, cosine-warmup')
 parser.add_argument('--accumulation', type=int, default=1)
 parser.add_argument('--momentum', type=float, default=0.0)
+parser.add_argument('--weight_decay', type=float, default=0.0)
 parser.add_argument('--max_epochs', type=int, default=1)
 '''
 	OUTPUT ARGS

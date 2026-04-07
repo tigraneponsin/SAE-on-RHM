@@ -26,6 +26,7 @@
 # $10=ffwd_size         (default: 4)
 # $11=dropout           (default: 0.1)
 # $12=save_models       (deprecated for this launcher; rules tracking for SAE requires saving models and is forced on)
+# $13=weight_decay      (default: 0.0)
 
 DEVICE="cuda"
 MODE="class"
@@ -48,6 +49,7 @@ FFWD_SIZE=${10:-4}
 DROPOUT=${11:-0.1}
 BATCH_SIZE=${5:-32}
 SAVE_MODELS=${12:-1}
+WEIGHT_DECAY=${13:-0.0}
 
 # Keep width for compatibility/logging in existing training code
 WIDTH=$EMBEDDING_DIM
@@ -75,9 +77,9 @@ fi
 SAVE_MODELS=1
 SAVE_MODEL_ARGS+=(--save_models)
 
-OUTNAME="RESULT_TRFCLASS_v_${NUM_CLASSES}_L_${NUM_LAYERS}_m=${NUM_SYNONYMS}_P_${TRAIN_SIZE}_${SLURM_ARRAY_TASK_ID}_emb_${EMBEDDING_DIM}_h_${NUM_HEADS}_lr_${LEARNING_RATE}_dropout_${DROPOUT}.pkl"
+OUTNAME="RESULT_TRFCLASS_v_${NUM_CLASSES}_L_${NUM_LAYERS}_m=${NUM_SYNONYMS}_P_${TRAIN_SIZE}_${SLURM_ARRAY_TASK_ID}_emb_${EMBEDDING_DIM}_h_${NUM_HEADS}_lr_${LEARNING_RATE}_dropout_${DROPOUT}_wd_${WEIGHT_DECAY}.pkl"
 
-RESULTS_DIR="/work/pcsl/ponsin/Mean_Transformer/Transformer_for_SAE/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}/"
+RESULTS_DIR="/work/pcsl/ponsin/Mean_Transformer/Transformer_for_SAE/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}_wdecay_${WEIGHT_DECAY}/"
 
 mkdir -p "$RESULTS_DIR"
 
@@ -135,6 +137,7 @@ srun python /home/ponsin/SAE-on-RHM/main.py \
     --optim "$OPTIM" \
     --accumulation "$ACCUMULATION" \
     --momentum "$MOMENTUM" \
+    --weight_decay "$WEIGHT_DECAY" \
     --max_epochs "$MAX_EPOCHS" \
     --print_freq "$PRINT_FREQ" \
     --save_freq "$SAVE_FREQ" \
