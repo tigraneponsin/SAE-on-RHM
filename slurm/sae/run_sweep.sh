@@ -6,7 +6,7 @@
 #   1. Edit constants in sae_sweep/generate_sweep.py, then run:
 #      python sae_sweep/generate_sweep.py
 #   2. Set SWEEP_CONFIGS and #SBATCH --array below, then:
-#      sbatch sae_sweep/run_sweep.sh
+#      sbatch slurm/sae/run_sweep.sh
 # =============================================================================
 
 # ── Job metadata ──────────────────────────────────────────────────────────────
@@ -17,7 +17,7 @@
 #SBATCH --account pcsl
 
 # ── Array size: set to 0-<N-1> where N = number printed by generate_sweep.py ─
-#SBATCH --array=0-25
+#SBATCH --array=0-24
 
 # ── Resources ─────────────────────────────────────────────────────────────────
 #SBATCH --time=01:00:00
@@ -29,7 +29,7 @@
 # =============================================================================
 # USER: set these two paths
 # =============================================================================
-SWEEP_CONFIGS=/work/pcsl/ponsin/Mean_Transformer/SAE/v_16_L_3_m_4_wdecay_0.001/sweep_alltokens_layer0_lambda1/sweep_configs.json
+SWEEP_CONFIGS=work/pcsl/ponsin/Mean_Transformer/SAE/v_16_L_3_m_4_wdecay_0.0001/sweep_alltokens_layer0_lambda1_zoom/sweep_configs.json
 REPO_DIR=/home/ponsin/SAE-on-RHM
 # =============================================================================
 

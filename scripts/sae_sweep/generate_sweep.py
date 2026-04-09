@@ -270,9 +270,9 @@ def main():
 
     print()
     print('Next steps:')
-    print(f'  1. Set SWEEP_CONFIGS={out_json} in sae_sweep/run_sweep.sh')
-    print(f'  2. Set #SBATCH --array=0-{n - 1} in sae_sweep/run_sweep.sh')
-    print('  3. sbatch sae_sweep/run_sweep.sh')
+    print(f'  1. Set SWEEP_CONFIGS={out_json} in slurm/sae/run_sweep.sh')
+    print(f'  2. Set #SBATCH --array=0-{n - 1} in slurm/sae/run_sweep.sh')
+    print('  3. sbatch slurm/sae/run_sweep.sh')
 
 
 if __name__ == '__main__':
