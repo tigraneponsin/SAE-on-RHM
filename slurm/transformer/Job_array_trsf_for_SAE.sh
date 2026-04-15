@@ -34,9 +34,9 @@
 
 v=16
 L=3
-m=4
-batch_size=16
-P=12160
-for wd in 0.00008 0.00009 0.00011 0.00012; do
+m=16
+batch_size=128
+P=256000
+for wd in 0.00008 0; do
     sbatch slurm/transformer/Sbatch_trsf_for_SAE.sh "$P" "$v" "$L" "$m" "$batch_size" "" "" "" "" "" "" "" "$wd"
  done

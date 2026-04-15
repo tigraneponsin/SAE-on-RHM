@@ -21,7 +21,7 @@
 # =============================================================================
 # USER: set these paths before submitting
 # =============================================================================
-SWEEP_DIR=/work/pcsl/ponsin/Mean_Transformer/SAE/v_16_L_3_m_4_wdecay_0.0001/sweep_alltokens_layer0_lambda1_zoom
+SWEEP_DIR=/work/pcsl/ponsin/Mean_Transformer/SAE/v_16_L_3_m_4_wdecay_0.0001/sweep_onetok7_layer1_lambda1_zoom
 REPO_DIR=/home/ponsin/SAE-on-RHM
 # =============================================================================
 

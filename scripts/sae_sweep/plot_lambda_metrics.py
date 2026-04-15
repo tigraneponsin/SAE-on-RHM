@@ -106,7 +106,7 @@ def main():
         latent_dim = np.array([int(r['latent_dim']) for r in rows])
         dead = np.array([int(r['dead_features']) for r in rows])
         mean_active = np.array([float(r['mean_active']) for r in rows])
-        sae_err = np.array([float(r['sae_err']) for r in rows])
+        norm_err = np.array([float(r['norm_err']) for r in rows])
         above_1pct = np.array([int(r['active_above_1pct']) for r in rows])
         above_10pct = np.array([int(r['active_above_10pct']) for r in rows])
         mean_above_1pct = np.array([float(r['mean_active_above_1pct']) for r in rows])
@@ -116,7 +116,7 @@ def main():
         if args.xlim:
             mask = (lam >= args.xlim[0]) & (lam <= args.xlim[1])
             lam, latent_dim, dead = lam[mask], latent_dim[mask], dead[mask]
-            mean_active, sae_err = mean_active[mask], sae_err[mask]
+            mean_active, norm_err = mean_active[mask], norm_err[mask]
             above_1pct, above_10pct = above_1pct[mask], above_10pct[mask]
             mean_above_1pct, mean_above_10pct = mean_above_1pct[mask], mean_above_10pct[mask]
 
@@ -138,14 +138,23 @@ def main():
                          markersize=4, linewidth=1.5,
                          label=f'L{layer}' if ls == 'solid' else '_nolegend_')
 
-        # Panel 3: classification error
-        ax_class.plot(lam, sae_err, '-o', color=c, label=f'Layer {layer}', markersize=4)
+        # Panel 3: normalized classification error
+        ax_class.plot(lam, norm_err, '-o', color=c, label=f'Layer {layer}', markersize=4)
 
-    # Baseline error reference line
+    # Normalized baseline error reference line
     first_row = next(iter(by_layer.values()))[0]
     baseline_err = float(first_row['baseline_err'])
-    ax_class.axhline(baseline_err, color='grey', linestyle='--', linewidth=1,
-                      label=f'Baseline ({baseline_err:.4f})')
+    random_err = 1.0 - 1.0 / len(by_layer)  # fallback; use actual ratio from CSV
+    # norm_baseline = baseline_err / random_err, but we can read it directly
+    # from the CSV: baseline_err is already in the row, random_err = baseline's
+    # denominator. Since norm_err = sae_err / random_err, the normalized baseline
+    # is baseline_err / random_err. We recover random_err from the first row.
+    first_norm = float(first_row['norm_err'])
+    first_sae = float(first_row['sae_err'])
+    random_err = first_sae / first_norm if first_norm != 0 else 1.0
+    norm_baseline = baseline_err / random_err
+    ax_class.axhline(norm_baseline, color='grey', linestyle='--', linewidth=1,
+                      label=f'Baseline ({norm_baseline:.4f})')
 
     # Add linestyle legend to panels 1 and 2
     for ax in (ax_ever, ax_mean):
@@ -160,7 +169,7 @@ def main():
     panel_info = [
         (ax_ever,  'Ever-active features',   'Feature count'),
         (ax_mean,  'Mean active features',   'Mean active per token'),
-        (ax_class, 'Classification error',   'Error rate'),
+        (ax_class, 'Normalized classification error',   'Normalized error'),
     ]
 
     for ax, title, ylabel in panel_info:

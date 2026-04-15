@@ -29,7 +29,7 @@
 # =============================================================================
 # USER: set these two paths
 # =============================================================================
-SWEEP_CONFIGS=/work/pcsl/ponsin/Mean_Transformer/SAE/v_16_L_3_m_4_wdecay_0/sweep_alltokens_layer0_lambda1_zoom/sweep_configs.json
+SWEEP_CONFIGS=/work/pcsl/ponsin/Mean_Transformer/SAE/v_16_L_3_m_4_wdecay_0.0001/sweep_onetok7_layer1_lambda1_zoom/sweep_configs.json
 REPO_DIR=/home/ponsin/SAE-on-RHM
 # =============================================================================
 
