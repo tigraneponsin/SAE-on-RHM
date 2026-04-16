@@ -13,7 +13,7 @@
 
 # ── Resources ────────────────────────────────────────────────────────────────
 #SBATCH --time=01:00:00
-#SBATCH --partition=h100
+#SBATCH --partition=l40s
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=8

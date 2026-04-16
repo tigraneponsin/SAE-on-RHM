@@ -63,7 +63,9 @@ ACCUMULATION=1
 INPUT_FORMAT="long"
 WHITENING=0
 
-MODEL="transformer_meanclass"
+MODEL="transformer_meanclass_nores"
+# Optional no-residual variant:
+# MODEL="transformer_meanclass_nores"
 OPTIM="adam"
 MOMENTUM=0.0
 PRINT_FREQ=32768
@@ -79,7 +81,7 @@ SAVE_MODEL_ARGS+=(--save_models)
 
 OUTNAME="RESULT_TRFCLASS_v_${NUM_CLASSES}_L_${NUM_LAYERS}_m=${NUM_SYNONYMS}_P_${TRAIN_SIZE}_${SLURM_ARRAY_TASK_ID}_emb_${EMBEDDING_DIM}_h_${NUM_HEADS}_lr_${LEARNING_RATE}_dropout_${DROPOUT}_wd_${WEIGHT_DECAY}.pkl"
 
-RESULTS_DIR="/work/pcsl/ponsin/Mean_Transformer/Transformer_for_SAE/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}_wdecay_${WEIGHT_DECAY}/"
+RESULTS_DIR="/work/pcsl/ponsin/Mean_Transformer/Transformer_for_SAE_nores/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}_wdecay_${WEIGHT_DECAY}/"
 
 mkdir -p "$RESULTS_DIR"
 

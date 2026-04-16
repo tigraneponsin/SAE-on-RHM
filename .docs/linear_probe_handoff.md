@@ -66,7 +66,7 @@ that correspond to the level-(L-1) ancestor of token 0.
 
 | File | Purpose |
 |------|---------|
-| `models/transformer.py` | Transformer architectures: `ClassificationTransformer` (CLS token), `MeanClassificationTransformer` (mean pooling) |
+| `models/transformer.py` | Transformer architectures: `ClassificationTransformer` (CLS token), `MeanClassificationTransformer` (mean pooling), `MeanClassificationTransformerNoResidual` (mean pooling, no residual adds) |
 | `models/sae.py` | `SparseAutoencoder`: encoder (Linear+ReLU), decoder (Linear), decoder-weighted L1 loss |
 | `datasets/random_hierarchy_model.py` | RHM: `sample_rules()`, `sample_trees()`, `RHM` class |
 | `init.py` | Model/data initialization: `init_model()`, `init_data()`, `transform_inputs()` |
@@ -86,9 +86,15 @@ that correspond to the level-(L-1) ancestor of token 0.
 - Classification from mean of all token representations
 - Same block structure
 
+**MeanClassificationTransformerNoResidual** (`transformer_meanclass_nores`):
+- Sequence: `s^L real tokens` (no CLS)
+- Classification from mean of all token representations
+- Same as `transformer_meanclass` except residual adds are removed inside each block
+
 **Token position offset**: For `transformer_class`, the real token at 0-based index
 `token_idx` sits at sequence position `1 + token_idx` (because CLS is at 0).
-For `transformer_meanclass`, it sits at sequence position `token_idx`.
+For `transformer_meanclass` and `transformer_meanclass_nores`, it sits at
+sequence position `token_idx`.
 
 ### SAE Training Setup
 

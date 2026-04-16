@@ -229,7 +229,7 @@ parser.add_argument('--whitening', type=int, default=0)
 '''
 	ARCHITECTURE ARGS
 '''
-parser.add_argument('--model', type=str, help='architecture (fcn, hcnn, hlcn, transformer_mla, transformer_clm, transformer_class, transformer_meanclass)')
+parser.add_argument('--model', type=str, help='architecture (fcn, hcnn, hlcn, transformer_mla, transformer_clm, transformer_class, transformer_meanclass, transformer_meanclass_nores)')
 parser.add_argument('--depth', type=int, help='depth of the network')
 parser.add_argument('--width', type=int, help='width of the network')
 parser.add_argument('--filter_size', type=int, default=None, help='filter size (CNN, LCN only)')

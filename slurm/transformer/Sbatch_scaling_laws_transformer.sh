@@ -62,6 +62,8 @@ INPUT_FORMAT="long"
 WHITENING=0
 
 MODEL="transformer_meanclass"
+# Optional no-residual variant:
+# MODEL="transformer_meanclass_nores"
 OPTIM="adam"
 MOMENTUM=0.0
 PRINT_FREQ=32768

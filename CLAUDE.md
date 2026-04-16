@@ -30,6 +30,7 @@ Layer `k` is expected to resolve RHM level `L-1-k` (bottom-up composition).
 ### Token Position Offset (non-obvious)
 - `transformer_class`: CLS at position 0; real token `i` is at sequence position `i+1`.
 - `transformer_meanclass`: real token `i` is at sequence position `i`.
+- `transformer_meanclass_nores`: real token `i` is at sequence position `i`.
 
 ### SAE Setup
 - Hooks into `model.blocks[layer_id]` post-block residual stream.

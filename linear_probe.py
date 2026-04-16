@@ -166,7 +166,8 @@ def collect_probe_data(
         trees: Full RHM tree dict for computing ancestor labels.
         layer_id: Which transformer block to hook (0-based).
         token_idx: 0-based real token index (among the s^L input tokens).
-        model_name: ``'transformer_class'`` or ``'transformer_meanclass'``.
+        model_name: ``'transformer_class'``, ``'transformer_meanclass'``,
+                or ``'transformer_meanclass_nores'``.
         hierarchy_level: Which RHM level to use as probe target.
         tuple_size: s parameter of the RHM.
         num_rhm_levels: L parameter of the RHM.

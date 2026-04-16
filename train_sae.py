@@ -145,7 +145,14 @@ def _collect_eval_loss(sae, model, eval_loader, layer_id, activation_source,
 
 
 def train_sae_posthoc(model, train_loader, config, eval_loader=None):
-    assert config.model in {'transformer_class', 'transformer_meanclass'}, 'post-hoc SAE is currently implemented for transformer_class or transformer_meanclass only'
+    assert config.model in {
+        'transformer_class',
+        'transformer_meanclass',
+        'transformer_meanclass_nores',
+    }, (
+        'post-hoc SAE is currently implemented for transformer_class, '
+        'transformer_meanclass, or transformer_meanclass_nores only'
+    )
     assert config.input_format == 'long', f'post-hoc SAE on {config.model} requires input_format=long'
 
     model.eval()
@@ -168,8 +175,11 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
         f"sae_activation_source={config.sae_activation_source} is invalid. "
         "Use one of: all_tokens, cls_token, one_token"
     )
-    if config.model == 'transformer_meanclass' and activation_source == 'cls_token':
-        raise ValueError('transformer_meanclass has no [CLS] token. Use sae_activation_source=all_tokens or one_token.')
+    if config.model in {'transformer_meanclass', 'transformer_meanclass_nores'} and activation_source == 'cls_token':
+        raise ValueError(
+            f'{config.model} has no [CLS] token. '
+            'Use sae_activation_source=all_tokens or one_token.'
+        )
 
     token_idx = int(getattr(config, 'sae_token_idx', 0))
     if activation_source == 'one_token':
@@ -576,7 +586,7 @@ def run(args):
 if __name__ == '__main__':
     torch.set_default_dtype(torch.float32)
 
-    parser = argparse.ArgumentParser(description='Post-hoc SAE training on trained transformer_class/transformer_meanclass checkpoints')
+    parser = argparse.ArgumentParser(description='Post-hoc SAE training on trained transformer_class/transformer_meanclass/transformer_meanclass_nores checkpoints')
 
     parser.add_argument('--train_output', type=str, default=None, help='path to main.py output .pt/.pkl produced with --save_models')
     parser.add_argument('--config_checkpoint', type=str, default=None, help='path to <outname>_config.pt from --checkpoints runs')
