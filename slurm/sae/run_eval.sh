@@ -13,7 +13,7 @@
 
 # ── Resources ────────────────────────────────────────────────────────────────
 #SBATCH --time=01:00:00
-#SBATCH --partition=l40s
+#SBATCH --partition=h100
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=8
@@ -21,7 +21,7 @@
 # =============================================================================
 # USER: set these paths before submitting
 # =============================================================================
-SWEEP_DIR=/work/pcsl/ponsin/Mean_Transformer/Small_SAE/v_16_L_3_m_4_wdecay_0.0001/sweep_onetok0_layer0_lambda1_zoom
+SWEEP_DIR=/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_4_wdecay_0.0001_steps_2^19/sweep_alltokens0_layer0_lambda1_zoom
 REPO_DIR=/home/ponsin/SAE-on-RHM
 # =============================================================================
 

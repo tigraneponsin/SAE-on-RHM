@@ -35,6 +35,25 @@ def _load_artifact(path: Path) -> dict:
     return torch.load(str(path), map_location='cpu', weights_only=False)
 
 
+def _load_decoder_weights(artifact: dict) -> torch.Tensor:
+    """Read the SAE checkpoint referenced by the artifact and return decoder
+    weights W_dec of shape [input_dim, latent_dim]."""
+    ckpt_path = artifact['ckpt_path']
+    ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+    layer_id = int(artifact['layer_id'])
+    sae_state = ckpt.get('sae_state', {})
+    state = sae_state.get(layer_id) or sae_state.get(str(layer_id))
+    if state is None:
+        raise RuntimeError(
+            f'No SAE state for layer {layer_id} in {ckpt_path}'
+        )
+    return state['decoder.weight'].detach().cpu()
+
+
+def _normalize_columns(W: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    return W / (W.norm(dim=0, keepdim=True) + eps)
+
+
 def _expected_target(layer_id: int, token_pos: int, rhm: dict):
     """Given an SAE at layer k and real-token index p, return (level, j) of
     the latent the hierarchy hypothesis says it should track.
@@ -72,7 +91,8 @@ def _num_values_for_level(level: int, rhm: dict) -> int:
     return int(rhm['v'])
 
 
-def _plot_expected_per_value(artifact: dict, pos_idx: int, top_k: int, out_path: Path):
+def _plot_expected_per_value(artifact: dict, pos_idx: int, top_k: int, out_path: Path,
+                             W_norm: torch.Tensor):
     targets = artifact['targets']
     cond_mean = artifact['conditional_mean']            # [T, P, F]
     token_pos = int(artifact['token_positions'][pos_idx].item())
@@ -112,6 +132,7 @@ def _plot_expected_per_value(artifact: dict, pos_idx: int, top_k: int, out_path:
         figsize=(4.2 * n_cols, 3.2 * n_rows),
         squeeze=False,
     )
+    last_im = None
 
     for panel_idx, value in enumerate(all_values):
         r = panel_idx // n_cols
@@ -156,6 +177,22 @@ def _plot_expected_per_value(artifact: dict, pos_idx: int, top_k: int, out_path:
         ax.set_ylabel('score = E[f_i | value] - baseline_i', fontsize=8)
         ax.set_title(f'value={value}  (count={count_by_value[value]})', fontsize=9)
 
+        # k*k decoder cosine similarity inset (upper-right corner of subplot).
+        top_idx = torch.as_tensor(top, dtype=torch.long)
+        W_sub = W_norm.index_select(1, top_idx)              # [D, k_this]
+        C = (W_sub.T @ W_sub).detach().cpu().numpy()         # [k_this, k_this]
+        ax_inset = ax.inset_axes([0.62, 0.62, 0.36, 0.36])
+        im = ax_inset.imshow(
+            C, vmin=-1, vmax=1, cmap='RdBu_r',
+            aspect='equal', interpolation='nearest',
+        )
+        ax_inset.set_xticks([])
+        ax_inset.set_yticks([])
+        for spine in ax_inset.spines.values():
+            spine.set_edgecolor('black')
+            spine.set_linewidth(0.5)
+        last_im = im
+
     # Hide any unused axes in the last row.
     for panel_idx in range(num_values, n_rows * n_cols):
         axes[panel_idx // n_cols][panel_idx % n_cols].axis('off')
@@ -165,7 +202,12 @@ def _plot_expected_per_value(artifact: dict, pos_idx: int, top_k: int, out_path:
         f'token={token_pos}  expected target = trees[{level}][:, {j}]'
     )
     fig.suptitle(suptitle, fontsize=11)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.tight_layout(rect=(0, 0, 0.93, 0.96))
+    if last_im is not None:
+        cax = fig.add_axes([0.945, 0.30, 0.012, 0.40])
+        cb = fig.colorbar(last_im, cax=cax)
+        cb.set_label('decoder cos sim', fontsize=8)
+        cb.ax.tick_params(labelsize=7)
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
     return True
@@ -197,9 +239,12 @@ def main():
           f'P={num_positions}, '
           f'F={artifact["latent_dim"]}')
 
+    W_dec = _load_decoder_weights(artifact)      # [input_dim, latent_dim]
+    W_norm = _normalize_columns(W_dec)
+
     for pos_idx in range(num_positions):
         expected_out = out_dir / f'expected_{stem}_pos{pos_idx:02d}.png'
-        ok = _plot_expected_per_value(artifact, pos_idx, args.top_k, expected_out)
+        ok = _plot_expected_per_value(artifact, pos_idx, args.top_k, expected_out, W_norm)
         if ok:
             print(f'  wrote {expected_out}')
         else:
