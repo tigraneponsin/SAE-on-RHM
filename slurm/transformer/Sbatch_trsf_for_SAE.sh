@@ -6,7 +6,7 @@
 #SBATCH -e /dev/null
 
 #SBATCH --partition h100
-#SBATCH --time 10:00:00
+#SBATCH --time 1:00:00
 #SBATCH --mem 90G
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1

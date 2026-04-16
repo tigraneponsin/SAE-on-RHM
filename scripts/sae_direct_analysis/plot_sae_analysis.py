@@ -213,6 +213,115 @@ def _plot_expected_per_value(artifact: dict, pos_idx: int, top_k: int, out_path:
     return True
 
 
+def _plot_selectivity_per_winner_feature(artifact: dict, pos_idx: int, out_path: Path):
+    """For each value v, pick f*(v) = argmax_f (E[f|v] - baseline_f) and plot
+    that feature's score across all values in its own subplot."""
+    targets = artifact['targets']
+    cond_mean = artifact['conditional_mean']            # [T, P, F]
+    token_pos = int(artifact['token_positions'][pos_idx].item())
+    rhm = artifact['rhm']
+    layer_id = int(artifact['layer_id'])
+
+    expected = _expected_target(layer_id, token_pos, rhm)
+    if expected is None:
+        return False
+    level, j = expected
+    idxs = _find_target_indices(targets, level, j)
+    F_total = int(artifact['latent_dim'])
+    if F_total <= 0 or not idxs:
+        return False
+
+    sub = cond_mean[idxs, pos_idx, :].clone()           # [V_obs, F]
+    baseline = artifact['baseline_mean'][pos_idx, :]    # [F]
+    score_matrix = sub - baseline.unsqueeze(0)          # [V_obs, F]
+    valid_mask = ~torch.isnan(score_matrix)
+    score_for_argmax = score_matrix.clone()
+    score_for_argmax[~valid_mask] = -float('inf')
+
+    observed_value_to_row = {
+        int(targets[idx]['value']): row_idx for row_idx, idx in enumerate(idxs)
+    }
+    count_by_value = {int(targets[idx]['value']): int(targets[idx]['count']) for idx in idxs}
+
+    num_values = _num_values_for_level(level, rhm)
+    if num_values <= 0:
+        return False
+    all_values = list(range(num_values))
+
+    n_cols = min(4, num_values)
+    n_rows = int(np.ceil(num_values / n_cols))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(4.2 * n_cols, 3.2 * n_rows),
+        squeeze=False,
+    )
+
+    for panel_idx, value in enumerate(all_values):
+        r = panel_idx // n_cols
+        c = panel_idx % n_cols
+        ax = axes[r][c]
+        ax.axhline(0.0, color='black', linewidth=0.5, alpha=0.5)
+
+        if value not in observed_value_to_row:
+            ax.text(0.5, 0.5, 'no data', transform=ax.transAxes,
+                    ha='center', va='center', fontsize=9, color='gray')
+            ax.set_xticks([])
+            ax.set_title(f'value={value}  (count=0)', fontsize=9)
+            continue
+
+        v_row = observed_value_to_row[value]
+        if not bool(valid_mask[v_row].any()):
+            ax.text(0.5, 0.5, 'no valid features', transform=ax.transAxes,
+                    ha='center', va='center', fontsize=9, color='gray')
+            ax.set_xticks([])
+            ax.set_title(f'value={value}  (count={count_by_value[value]})', fontsize=9)
+            continue
+
+        f_star = int(torch.argmax(score_for_argmax[v_row]).item())
+
+        bars = np.full(num_values, np.nan, dtype=np.float64)
+        for other_value in all_values:
+            if other_value not in observed_value_to_row:
+                continue
+            o_row = observed_value_to_row[other_value]
+            if not bool(valid_mask[o_row, f_star]):
+                continue
+            bars[other_value] = float(score_matrix[o_row, f_star].item())
+
+        x = np.arange(num_values)
+        plot_mask = ~np.isnan(bars)
+        colors = ['tab:orange' if i == value else 'tab:blue' for i in range(num_values)]
+        ax.bar(
+            x[plot_mask],
+            bars[plot_mask],
+            color=[colors[i] for i in range(num_values) if plot_mask[i]],
+            edgecolor='black',
+            linewidth=0.4,
+        )
+        ax.set_xticks(x)
+        ax.set_xticklabels([str(i) for i in all_values], fontsize=7)
+        ax.set_xlabel('latent value', fontsize=8)
+        ax.set_ylabel('score = E[f|value] - baseline', fontsize=8)
+        ax.set_title(
+            f'feature {f_star}  (winner of value={value}, count={count_by_value[value]})',
+            fontsize=9,
+        )
+
+    for panel_idx in range(num_values, n_rows * n_cols):
+        axes[panel_idx // n_cols][panel_idx % n_cols].axis('off')
+
+    suptitle = (
+        f'selectivity: {Path(artifact["ckpt_path"]).name}  layer={layer_id}  '
+        f'token={token_pos}  expected target = trees[{level}][:, {j}]'
+    )
+    fig.suptitle(suptitle, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1.0, 0.96))
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,

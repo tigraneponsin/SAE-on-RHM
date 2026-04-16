@@ -581,7 +581,7 @@ def main():
             mode=r.get('mode', '-'),
             token_idx=tok_str,
             latent_dim=r['latent_dim'],
-            lambda_l1=f"{r['lambda_l1']:.0f}",
+            lambda_l1=f"{r['lambda_l1']:.2e}",
             lr=f"{r['lr']:.1e}",
             steps=r['steps'],
             batch_size=r['batch_size'],
