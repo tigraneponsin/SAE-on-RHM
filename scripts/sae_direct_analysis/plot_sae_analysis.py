@@ -360,6 +360,11 @@ def main():
             print(f'  skipped expected-target plot for pos_idx={pos_idx} '
                   '(CLS token or out-of-range layer)')
 
+        selectivity_out = out_dir / f'selectivity_{stem}_pos{pos_idx:02d}.png'
+        ok2 = _plot_selectivity_per_winner_feature(artifact, pos_idx, selectivity_out)
+        if ok2:
+            print(f'  wrote {selectivity_out}')
+
 
 if __name__ == '__main__':
     main()

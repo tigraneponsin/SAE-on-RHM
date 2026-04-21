@@ -140,10 +140,15 @@ def enumerate_targets(trees: dict):
 @torch.no_grad()
 def analyze_checkpoint(model, sae, trees, layer_id: int, mode: str,
                        has_cls: bool, token_idx: int, act_scale: float,
-                       batch_size: int, device: str):
+                       batch_size: int, device: str,
+                       compute_cofire: bool = True):
     """Run the streaming analysis for a single (model, sae) pair.
 
     Returns a dict with all the fields that will be saved to the artifact.
+
+    If compute_cofire is True, also accumulates per-(position, feature)
+    firing_rate, firing_count, mean_cofire = E[L0_p | f_i > 0], and the
+    per-position L0_mean = E[L0_p].
     """
     # ----- Eval loader: shuffle=False so batch rows line up with `trees` -----
     inputs = trees[max(trees.keys())]  # trees[L], shape [N, s^L]
@@ -179,6 +184,11 @@ def analyze_checkpoint(model, sae, trees, layer_id: int, mode: str,
     num_positions = None
     saved_token_positions = None
 
+    # Co-firing accumulators (only allocated if compute_cofire).
+    sum_fire = None       # [P, F]  -- count of times f_i > 0 per (p, f)
+    sum_cofire = None     # [P, F]  -- sum over b of 1{f_i>0} * L0_p(b)
+    sum_L0 = None         # [P]     -- sum over b of L0_p(b)
+
     try:
         sample_cursor = 0
         for batch_inputs, _ in loader:
@@ -205,6 +215,10 @@ def analyze_checkpoint(model, sae, trees, layer_id: int, mode: str,
                 count_cond = torch.zeros(num_targets, dtype=torch.long, device=device)
                 num_positions = P
                 saved_token_positions = token_positions.clone()
+                if compute_cofire:
+                    sum_fire = torch.zeros(P, latent_dim, dtype=torch.float64, device=device)
+                    sum_cofire = torch.zeros(P, latent_dim, dtype=torch.float64, device=device)
+                    sum_L0 = torch.zeros(P, dtype=torch.float64, device=device)
             elif P != num_positions:
                 raise RuntimeError(
                     f'Token-count changed between batches: expected {num_positions}, got {P}'
@@ -213,6 +227,14 @@ def analyze_checkpoint(model, sae, trees, layer_id: int, mode: str,
             sum_f += f.sum(dim=0)           # [P, F]
             sum_f2 += (f * f).sum(dim=0)
             count_total += B
+
+            if compute_cofire:
+                fire = (f > 0).double()                 # [B, P, F]
+                L0_per_pos = fire.sum(dim=2)            # [B, P]
+                sum_fire += fire.sum(dim=0)             # [P, F]
+                # cofire[p, f] = sum_b fire[b, p, f] * L0_per_pos[b, p]
+                sum_cofire += torch.einsum('bpf,bp->pf', fire, L0_per_pos)
+                sum_L0 += L0_per_pos.sum(dim=0)         # [P]
 
             # --- Vectorized conditional accumulation, grouped by (level, pos) ---
             # For each (level, pos) group we materialize an [B, V_g] one-hot
@@ -274,7 +296,7 @@ def analyze_checkpoint(model, sae, trees, layer_id: int, mode: str,
     # position, so we tile along the P dimension.
     count_cond_tp = count_cond.unsqueeze(-1).expand(num_targets, num_positions).contiguous()
 
-    return {
+    result = {
         'num_samples_used': int(count_total),
         'token_positions': saved_token_positions.cpu(),
         'targets': targets,
@@ -286,6 +308,19 @@ def analyze_checkpoint(model, sae, trees, layer_id: int, mode: str,
         'z_score': z_score.float().cpu(),
         'decoder_norms': dec_norms.float().cpu(),
     }
+
+    if compute_cofire:
+        firing_count = sum_fire.long()                         # [P, F]
+        firing_rate = sum_fire / count_total_t                 # [P, F]
+        mean_cofire = sum_cofire / sum_fire.clamp_min(1.0)     # [P, F]
+        mean_cofire[sum_fire == 0] = float('nan')
+        L0_mean = sum_L0 / count_total_t                       # [P]
+        result['firing_count'] = firing_count.cpu()
+        result['firing_rate'] = firing_rate.float().cpu()
+        result['mean_cofire'] = mean_cofire.float().cpu()
+        result['L0_mean'] = L0_mean.float().cpu()
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +397,10 @@ def main():
     parser.add_argument('--dedupe', action='store_true',
                         help='Drop duplicate RHM trees before analysis so '
                              'conditional expectations are exact over unique trees')
+    parser.add_argument('--no_cofire', action='store_true',
+                        help='Skip per-(position, feature) firing_rate, '
+                             'firing_count, mean_cofire, L0_mean accumulation '
+                             '(saves a bit of memory / time)')
     parser.add_argument('--device', type=str, default=None,
                         help='Device (default: cuda if available, else cpu)')
     args = parser.parse_args()
@@ -469,6 +508,7 @@ def main():
                     model=model, sae=sae, trees=trees, layer_id=layer_id,
                     mode=mode, has_cls=has_cls, token_idx=token_idx,
                     act_scale=act_scale, batch_size=args.batch_size, device=device,
+                    compute_cofire=not args.no_cofire,
                 )
             except Exception as exc:
                 print(f'    ERROR during analysis: {exc}')
