@@ -27,10 +27,10 @@
 
 # -- Resources ----------------------------------------------------------------
 #SBATCH --time=00:10:00
-#SBATCH --partition=l40s
+#SBATCH --partition=h100
 #SBATCH --gres=gpu:1
-#SBATCH --mem=32G
-#SBATCH --cpus-per-task=8
+#SBATCH --mem=90G
+#SBATCH --cpus-per-task=16
 
 #SBATCH -o %x_%j.out
 #SBATCH -e %x_%j.err
