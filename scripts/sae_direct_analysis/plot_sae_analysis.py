@@ -1,6 +1,6 @@
-"""Plot per-value top-K SAE feature selectivity from analyze_sae.py artifacts.
+"""Plot per-value top-K SAE feature selectivity from sae_eval artifacts.
 
-For a single .feature_latent.pt artifact, produces one figure per analyzed
+For a single .sae_eval.pt artifact, produces one figure per analyzed
 real-token position p:
 
   expected_<ckpt>_pos<p>.png
@@ -16,7 +16,7 @@ and plot:
 
 Usage:
     python scripts/sae_direct_analysis/plot_sae_analysis.py \\
-        --artifact /path/to/<ckpt>.feature_latent.pt \\
+        --artifact /path/to/<ckpt>.sae_eval.pt \\
         [--out_dir /path/to/figures/] \\
         [--top_k 12]
 """
@@ -328,7 +328,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--artifact', required=True,
-                        help='Path to a .feature_latent.pt from analyze_sae.py')
+                        help='Path to a .sae_eval.pt artifact from scripts/sae_eval/run.py')
     parser.add_argument('--out_dir', default=None,
                         help='Directory to write figures to (default: next to the artifact)')
     parser.add_argument('--top_k', type=int, default=12,
@@ -340,7 +340,11 @@ def main():
 
     out_dir = Path(args.out_dir) if args.out_dir else artifact_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = artifact_path.stem.replace('.feature_latent', '')
+    stem = artifact_path.stem
+    for suf in ('.sae_eval', '.feature_latent'):
+        if stem.endswith(suf):
+            stem = stem[: -len(suf)]
+            break
 
     num_positions = int(artifact['token_positions'].numel())
     print(f'Plotting {artifact_path.name}: '

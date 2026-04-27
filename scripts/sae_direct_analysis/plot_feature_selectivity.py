@@ -1,6 +1,6 @@
 """Population-level feature selectivity and co-firing plots.
 
-For each analyzed real-token position p in a .feature_latent.pt artifact,
+For each analyzed real-token position p in a .sae_eval.pt artifact,
 produces a single PNG with:
 
   Main panel (scatter):
@@ -15,13 +15,13 @@ produces a single PNG with:
   Top marginal:
     Histogram of selectivity over non-dead features at this position.
 
-The artifact must be produced by an analyze_sae.py run that had
---no_cofire UNSET (the default). If firing_rate / firing_count /
-mean_cofire / L0_mean are missing the script exits with a clear message.
+The artifact must be produced by scripts/sae_eval/run.py with at least
+--with-per-feature and --with-conditional so firing_rate / firing_count /
+mean_cofire / L0_mean / delta_mean are present.
 
 Usage:
     python scripts/sae_direct_analysis/plot_feature_selectivity.py \\
-        --artifact /path/to/<ckpt>.feature_latent.pt \\
+        --artifact /path/to/<ckpt>.sae_eval.pt \\
         [--out_dir /path/to/figures/] \\
         [--alpha 0.3] \\
         [--positions 0 3 5] \\
@@ -214,7 +214,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--artifact', required=True,
-                        help='Path to a .feature_latent.pt from analyze_sae.py')
+                        help='Path to a .sae_eval.pt artifact from scripts/sae_eval/run.py')
     parser.add_argument('--out_dir', default=None,
                         help='Directory to write figures to (default: next to artifact)')
     parser.add_argument('--alpha', type=float, default=0.3,
@@ -232,12 +232,16 @@ def main():
     if missing:
         raise SystemExit(
             f'Artifact {artifact_path} is missing co-firing keys {missing}. '
-            f'Re-run analyze_sae.py without --no_cofire to regenerate it.'
+            f'Re-run scripts/sae_eval/run.py with --with-per-feature to regenerate it.'
         )
 
     out_dir = Path(args.out_dir) if args.out_dir else artifact_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = artifact_path.stem.replace('.feature_latent', '')
+    stem = artifact_path.stem
+    for suf in ('.sae_eval', '.feature_latent'):
+        if stem.endswith(suf):
+            stem = stem[: -len(suf)]
+            break
 
     num_positions = int(artifact['token_positions'].numel())
     if args.positions is None:

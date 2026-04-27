@@ -44,11 +44,16 @@ if [[ $# -lt 2 ]]; then
     echo "  SWEEP_DIR_OR_CKPT: either"
     echo "                     - a directory containing SAE .pt checkpoints"
     echo "                     - a single SAE checkpoint .pt file"
-    echo "  OUT_DIR   : destination directory for *.feature_latent.pt"
+    echo "  OUT_DIR   : destination directory for *.sae_eval.pt"
     echo "  EVAL_SIZE : optional, default 32768"
     echo "  BATCH_SIZE: optional, default 512"
     echo "  DEVICE    : optional, default cuda"
     echo "  DEDUPE    : optional, 0 or 1, default 1"
+    echo ""
+    echo "Runs the unified SAE streaming eval (scripts/sae_eval/run.py) with every"
+    echo "--with-* flag enabled; produces *.sae_eval.pt per checkpoint containing"
+    echo "scalar aggregates, per-position tensors, per-feature tensors, conditional"
+    echo "stats, joint-fire entropy, and classification impact."
     exit 1
 fi
 
@@ -83,7 +88,7 @@ conda activate pcsl
 set -u
 
 # -- Redirect logs next to the analysis outputs -------------------------------
-exec > "${OUT_DIR}/analyze_sae.out" 2> "${OUT_DIR}/analyze_sae.err"
+exec > "${OUT_DIR}/sae_eval.out" 2> "${OUT_DIR}/sae_eval.err"
 
 echo "======================================================================"
 echo "Job:        ${SLURM_JOB_ID}"
@@ -107,12 +112,13 @@ if [[ "${DEDUPE}" == "1" ]]; then
 fi
 
 set +e
-srun python "${REPO_DIR}/scripts/sae_direct_analysis/analyze_sae.py" \
+srun python "${REPO_DIR}/scripts/sae_eval/run.py" \
     "${ANALYZE_TARGET_ARGS[@]}" \
     --out_dir "${OUT_DIR}" \
     --eval_size "${EVAL_SIZE}" \
     --batch_size "${BATCH_SIZE}" \
     --device "${DEVICE}" \
+    --with-all \
     "${DEDUPE_ARGS[@]}"
 EXIT_CODE=$?
 set -e

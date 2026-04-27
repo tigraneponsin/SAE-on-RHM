@@ -43,6 +43,58 @@ def sample_rules( v, n, m, s, L, seed=42):
         return rules
 
 
+def latent_prior(rules, n, v):
+    """
+    Exact marginal P(Z_{l,j} = z) for every (level, slot) under a uniform
+    class prior, computed by propagating the rules down the hierarchy.
+
+    Args:
+        rules: dict mapping level index 0..L-1 to a LongTensor of shape
+               (V_l, m, s) produced by sample_rules. Level 0 has V_0 = n,
+               levels l >= 1 have V_l = v.
+        n: number of root classes.
+        v: vocabulary size for levels l >= 1 (including the leaves).
+
+    Returns:
+        dict mapping level index 0..L to a float64 Tensor of shape
+        (s^level, V_level):
+          level 0: shape (1, n), uniform (1/n, 1/n, ..., 1/n).
+          level l in 1..L: shape (s^l, v), marginal at each slot.
+    """
+    L = len(rules)
+    priors = {0: torch.full((1, n), 1.0 / float(n), dtype=torch.float64)}
+    for l in range(L):
+        parent_rules = rules[l].long()                    # (V_l, m, s)
+        V_l, m, s = parent_rules.shape
+        V_next = rules[l + 1].shape[0] if (l + 1) in rules else v
+        # trans[z, slot, z'] = (1/m) * #{r : rules[l][z, r, slot] == z'}
+        one_hot = F.one_hot(parent_rules, num_classes=V_next).double()  # (V_l, m, s, V_next)
+        trans = one_hot.sum(dim=1) / float(m)             # (V_l, s, V_next)
+        # priors[l] (s^l, V_l) @ trans (V_l, s, V_next) -> (s^l, s, V_next)
+        new_prior = torch.einsum('jz,zsw->jsw', priors[l], trans)
+        priors[l + 1] = new_prior.reshape(-1, V_next).contiguous()
+    return priors
+
+
+def latent_entropy(prior):
+    """
+    H(Z_{l,j}) in nats for every (level, slot), from a prior dict produced
+    by latent_prior.
+
+    Args:
+        prior: dict mapping level -> FloatTensor of shape (s^level, V_level).
+
+    Returns:
+        dict mapping level -> FloatTensor of shape (s^level,), entropy in nats.
+    """
+    out = {}
+    for level, p in prior.items():
+        p64 = p.double()
+        H = -torch.special.xlogy(p64, p64).sum(dim=-1)
+        out[level] = H.float()
+    return out
+
+
 def sample_trees( num_data, rules, prior=None, probs=None, seed=42):
     """
     Create num_data Random Hierarchy Model data starting from the root prior, a set of rules and their probabilities.

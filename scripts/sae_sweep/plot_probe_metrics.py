@@ -1,6 +1,6 @@
 """Plot SAE sparsity metrics + probe reconstruction error as a function of lambda_1.
 
-Combines the CSV outputs of eval_sweep.py and eval_probe.py to plot three panels:
+Combines the CSV outputs of scripts/sae_eval/run.py and eval_probe.py to plot three panels:
   1. Ever-active features: binary (>0), >1% of max mean, >10% of max mean
   2. Mean active features per token: binary (>0), >1% of token max, >10% of token max
   3. Probe reconstruction error (recon_id_error_norm) with clean baseline reference
@@ -85,7 +85,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--sweep_csv', required=True,
-                        help='Path to eval_results.csv from eval_sweep.py')
+                        help='Path to the sweep CSV emitted by scripts/sae_eval/run.py --outcsv')
     parser.add_argument('--probe_csv', required=True,
                         help='Path to probe_results.csv from eval_probe.py')
     parser.add_argument('--outfile', default=None,

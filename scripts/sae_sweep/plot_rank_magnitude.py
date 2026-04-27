@@ -4,11 +4,12 @@ Shows, for each layer, the distribution of mean activation magnitudes across
 features, with one histogram per lambda_1 value. Log-scale bins reveal both
 the dominant features and the long tail of near-zero activations.
 
-Input: the .features.pt file produced by eval_sweep.py alongside the CSV.
+Input: a directory of *.sae_eval.pt artifacts produced by scripts/sae_eval/run.py
+(with at least --with-per-feature so feature_mean_activations is populated).
 
 Usage:
     python sae_sweep/plot_rank_magnitude.py \
-        --features /work/pcsl/ponsin/Mean_Transformer/SAE/sweep_round2_lambda/eval_results.features.pt
+        --artifacts_dir /path/to/sweep/sae_eval_artifacts/
 """
 
 import argparse
@@ -28,21 +29,35 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('--features', required=True,
-                        help='Path to .features.pt file from eval_sweep.py')
+    parser.add_argument('--artifacts_dir', required=True,
+                        help='Directory of *.sae_eval.pt artifacts from scripts/sae_eval/run.py')
     parser.add_argument('--outfile', default=None,
-                        help='Output figure path (default: <features_dir>/activation_histograms.png)')
+                        help='Output figure path (default: <artifacts_dir>/activation_histograms.png)')
     parser.add_argument('--bins', type=int, default=50,
                         help='Number of histogram bins (default: 50)')
     args = parser.parse_args()
 
-    data = torch.load(args.features, map_location='cpu')
-    outfile = args.outfile or str(Path(args.features).parent / 'activation_histograms.png')
+    artifacts_dir = Path(args.artifacts_dir)
+    if not artifacts_dir.is_dir():
+        raise SystemExit(f'--artifacts_dir is not a directory: {artifacts_dir}')
+    files = sorted(artifacts_dir.glob('*.sae_eval.pt'))
+    if not files:
+        raise SystemExit(f'No *.sae_eval.pt files in {artifacts_dir}')
+    outfile = args.outfile or str(artifacts_dir / 'activation_histograms.png')
 
-    # Group by layer
     by_layer = defaultdict(list)
-    for ckpt_name, entry in data.items():
-        by_layer[int(entry['layer'])].append(entry)
+    for f in files:
+        art = torch.load(f, map_location='cpu', weights_only=False)
+        feat = art.get('feature_mean_activations')
+        if feat is None:
+            print(f'  skipping {f.name}: no feature_mean_activations '
+                  '(re-run with --with-per-feature)')
+            continue
+        by_layer[int(art['layer_id'])].append({
+            'layer': int(art['layer_id']),
+            'lambda_l1': float(art.get('lambda_l1') or 0.0),
+            'feature_mean_activations': feat,
+        })
 
     layers = sorted(by_layer.keys())
     n_layers = len(layers)

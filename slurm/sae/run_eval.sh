@@ -1,13 +1,15 @@
 #!/bin/bash
 # =============================================================================
-# Slurm script to run eval_sweep.py on a completed SAE sweep.
+# Slurm script to run scripts/sae_eval/run.py on a completed SAE sweep,
+# emitting the sweep-summary CSV (scalar aggregates + classification impact +
+# entropy aggregates) alongside per-checkpoint *.sae_eval.pt artifacts.
 #
 # Usage:
 #   sbatch slurm/sae/run_eval.sh
 # =============================================================================
 
-# ── Job metadata ─────────────────────────────────────────────────────────────
-#SBATCH --job-name=eval_sweep
+# -- Job metadata -------------------------------------------------------------
+#SBATCH --job-name=sae_eval_sweep
 #SBATCH --chdir /home/ponsin
 #SBATCH --account pcsl
 
@@ -32,8 +34,8 @@ REPO_DIR=/home/ponsin/SAE-on-RHM
 source /home/ponsin/miniconda3/etc/profile.d/conda.sh
 conda activate pcsl
 
-# ── Redirect logs next to the CSV output ─────────────────────────────────────
-exec > "${SWEEP_DIR}/eval_sweep.out" 2> "${SWEEP_DIR}/eval_sweep.err"
+# -- Redirect logs next to the CSV output -------------------------------------
+exec > "${SWEEP_DIR}/sae_eval_sweep.out" 2> "${SWEEP_DIR}/sae_eval_sweep.err"
 
 echo "======================================================================"
 echo "Job:        ${SLURM_JOB_ID}"
@@ -41,9 +43,12 @@ echo "Node:       ${SLURMD_NODENAME}"
 echo "SWEEP_DIR:  ${SWEEP_DIR}"
 echo "======================================================================"
 
-srun python "${REPO_DIR}/scripts/sae_sweep/eval_sweep.py" \
+srun python "${REPO_DIR}/scripts/sae_eval/run.py" \
     --sweep_dir "${SWEEP_DIR}" \
-    --outcsv "${SWEEP_DIR}/eval_results.csv"
+    --out_dir "${SWEEP_DIR}/sae_eval_artifacts" \
+    --outcsv "${SWEEP_DIR}/eval_results.csv" \
+    --per_position_csv "${SWEEP_DIR}/eval_results_per_position.csv" \
+    --with-all
 
 EXIT_CODE=$?
 echo "Eval finished with exit code ${EXIT_CODE}."

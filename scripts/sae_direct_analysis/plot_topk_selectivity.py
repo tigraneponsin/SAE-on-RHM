@@ -18,7 +18,7 @@ Output: one PNG per value v, each containing K subplots.
 
 Usage:
     python scripts/sae_direct_analysis/plot_topk_selectivity.py \\
-        --artifact /path/to/<ckpt>.feature_latent.pt \\
+        --artifact /path/to/<ckpt>.sae_eval.pt \\
         --token_pos <p>              \\
         [--top_k 12]                 \\
         [--out_dir /path/to/figures/]
@@ -168,7 +168,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--artifact', required=True,
-                        help='Path to a .feature_latent.pt from analyze_sae.py')
+                        help='Path to a .sae_eval.pt artifact from scripts/sae_eval/run.py')
     parser.add_argument('--token_pos', type=int, required=True,
                         help='Real-token index p (0-based). Must be present in the '
                              "artifact's token_positions tensor.")
@@ -183,7 +183,11 @@ def main():
 
     out_dir = Path(args.out_dir) if args.out_dir else artifact_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = artifact_path.stem.replace('.feature_latent', '')
+    stem = artifact_path.stem
+    for suf in ('.sae_eval', '.feature_latent'):
+        if stem.endswith(suf):
+            stem = stem[: -len(suf)]
+            break
 
     token_positions = artifact['token_positions']
     pos_idx = _resolve_pos_idx(token_positions, args.token_pos)

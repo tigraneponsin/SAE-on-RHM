@@ -1,6 +1,6 @@
 """Plot SAE quality metrics as a function of lambda_1.
 
-Reads the CSV produced by eval_sweep.py and plots three panels:
+Reads the CSV produced by scripts/sae_eval/run.py and plots three panels:
   1. Ever-active features: binary (>0), >1% of max mean, >10% of max mean
   2. Mean active features per token: binary (>0), >1% of token max, >10% of token max
   3. Classification error (with baseline reference)
@@ -70,7 +70,8 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('--csv', required=True, help='Path to eval_results.csv from eval_sweep.py')
+    parser.add_argument('--csv', required=True,
+                        help='Path to the sweep CSV emitted by scripts/sae_eval/run.py --outcsv')
     parser.add_argument('--outfile', default=None,
                         help='Output figure path (default: <csv_dir>/lambda_metrics.png)')
     parser.add_argument('--xlim', type=float, nargs=2, default=None, metavar=('MIN', 'MAX'),
