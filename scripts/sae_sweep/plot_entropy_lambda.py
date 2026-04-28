@@ -120,7 +120,7 @@ def _plot_layer(layer, entries, outfile, xlim):
                     markersize=3, linewidth=1.0)
         ax.set_title(f'pos {p}', fontsize=9)
         ax.set_xscale('log')
-        ax.set_ylim(0.0, 1.05)
+        ax.set_ylim(-0.05, 1.05)
         ax.grid(True, which='both', linestyle='--', linewidth=0.3, alpha=0.5)
         if xlim is not None:
             ax.set_xlim(xlim[0], xlim[1])
@@ -133,7 +133,7 @@ def _plot_layer(layer, entries, outfile, xlim):
                     markersize=3, linewidth=1.2)
     ax_agg.set_title('mean over positions', fontsize=9, fontweight='bold')
     ax_agg.set_xscale('log')
-    ax_agg.set_ylim(0.0, 1.05)
+    ax_agg.set_ylim(-0.05, 1.05)
     ax_agg.grid(True, which='both', linestyle='--', linewidth=0.3, alpha=0.5)
     if xlim is not None:
         ax_agg.set_xlim(xlim[0], xlim[1])
