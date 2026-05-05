@@ -17,7 +17,7 @@
 #SBATCH --account pcsl
 
 # ── Array size: set to 0-<N-1> where N = number printed by generate_sweep.py ─
-#SBATCH --array=0-24
+#SBATCH --array=0-31
 
 # ── Resources ─────────────────────────────────────────────────────────────────
 #SBATCH --time=01:00:00
@@ -29,7 +29,7 @@
 # =============================================================================
 # USER: set these two paths
 # =============================================================================
-SWEEP_CONFIGS=/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_4_wdecay_0.0001_nores/sweep_alltokens_layer2_lambda1_zoom/sweep_configs.json
+SWEEP_CONFIGS=/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_5_m_4_wdecay_0.0/sweep_alltokens_layer0_lambda1_zoom/sweep_configs.json
 REPO_DIR=/home/ponsin/SAE-on-RHM
 # =============================================================================
 

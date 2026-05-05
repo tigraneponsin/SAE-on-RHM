@@ -380,22 +380,45 @@ def _normalize_model_state_dict_keys(state_dict):
 
 
 def _load_training_artifacts(args):
+    model_variant = getattr(args, 'model_variant', 'best')
+    if model_variant not in ('best', 'last'):
+        raise ValueError(f"model_variant must be 'best' or 'last', got {model_variant!r}")
+
     if args.train_output is not None:
         blob = torch.load(args.train_output, map_location='cpu', weights_only=False)
         assert isinstance(blob, dict) and 'config' in blob and 'output' in blob, (
             'train_output must be a main.py consolidated output containing config/output.'
         )
         output = blob['output']
-        assert 'model' in output, (
-            'No model weights found in train_output. Re-run transformer training with --save_models '
-            'or train with --checkpoints and use --config_checkpoint + --model_checkpoint.'
-        )
-        model_state = _normalize_model_state_dict_keys(output['model'])
-        return blob['config'], model_state, output.get('step'), output.get('rules')
+        if model_variant == 'best':
+            best = output.get('best')
+            if not isinstance(best, dict) or 'model' not in best:
+                raise RuntimeError(
+                    f"--model_variant=best requested but transformer artifact "
+                    f"{args.train_output!r} has no output['best']['model']. "
+                    f"Re-train transformer with the current main.py, "
+                    f"or pass --model_variant last."
+                )
+            model_state = _normalize_model_state_dict_keys(best['model'])
+            model_step = best.get('step', output.get('step'))
+        else:
+            assert 'model' in output, (
+                'No model weights found in train_output. Re-run transformer training with --save_models '
+                'or train with --checkpoints and use --config_checkpoint + --model_checkpoint.'
+            )
+            model_state = _normalize_model_state_dict_keys(output['model'])
+            model_step = output.get('step')
+        return blob['config'], model_state, model_step, output.get('rules'), model_variant
 
     assert args.model_checkpoint is not None and args.config_checkpoint is not None, (
         'Use either --train_output, or both --config_checkpoint and --model_checkpoint.'
     )
+
+    if model_variant == 'best':
+        raise RuntimeError(
+            "--model_variant=best is only supported with --train_output. "
+            "With --model_checkpoint the variant is implicit; pass --model_variant last."
+        )
 
     config_blob = torch.load(args.config_checkpoint, map_location='cpu', weights_only=False)
     config = config_blob['config'] if isinstance(config_blob, dict) and 'config' in config_blob else config_blob
@@ -404,13 +427,13 @@ def _load_training_artifacts(args):
     model_blob = torch.load(args.model_checkpoint, map_location='cpu', weights_only=False)
     if isinstance(model_blob, dict) and 'model' in model_blob:
         model_state = _normalize_model_state_dict_keys(model_blob['model'])
-        return config, model_state, model_blob.get('step'), rules
+        return config, model_state, model_blob.get('step'), rules, 'last'
     model_state = _normalize_model_state_dict_keys(model_blob)
-    return config, model_state, None, rules
+    return config, model_state, None, rules, 'last'
 
 
 def run(args):
-    config, model_state, model_step, fixed_rules = _load_training_artifacts(args)
+    config, model_state, model_step, fixed_rules, model_variant = _load_training_artifacts(args)
 
     # Apply SAE hyperparameter defaults (only if not already set in the loaded config)
     defaults = {
@@ -545,6 +568,7 @@ def run(args):
                 'config_checkpoint': args.config_checkpoint,
                 'model_checkpoint': args.model_checkpoint,
                 'model_step': model_step,
+                'model_variant': model_variant,
             },
             'sae_dataset_split': {
                 'rules_source': 'artifact' if fixed_rules is not None else 'seed_rules_resampled',
@@ -592,6 +616,8 @@ if __name__ == '__main__':
     parser.add_argument('--config_checkpoint', type=str, default=None, help='path to <outname>_config.pt from --checkpoints runs')
     parser.add_argument('--model_checkpoint', type=str, default=None, help='path to model checkpoint (<outname>_t*.pt) or plain state_dict')
     parser.add_argument('--outname', type=str, default=None, help='output path for SAE artifact (default: source + _sae.pt)')
+    parser.add_argument('--model_variant', choices=['best', 'last'], default='best',
+                        help="which transformer weights to train SAE on: 'best' (lowest test loss) or 'last' (final step). Default: best.")
 
     parser.add_argument('--device', type=str, default=None)
     parser.add_argument('--sae_layer', type=int, default=None, help='single transformer layer id to train (overrides --sae_layers)')

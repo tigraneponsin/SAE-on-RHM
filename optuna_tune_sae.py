@@ -127,7 +127,7 @@ def _make_objective(model, trees_train, trees_eval, base_config, layer_id, laten
 
 def run(args):
     # Load transformer checkpoint
-    config, model_state, _, fixed_rules = _load_training_artifacts(args)
+    config, model_state, _, fixed_rules, _model_variant = _load_training_artifacts(args)
 
     # Apply SAE defaults for any missing config fields
     defaults = {

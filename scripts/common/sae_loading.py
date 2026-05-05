@@ -81,23 +81,45 @@ def resolve_rules(blob: dict, source_label: str):
 
 
 def load_transformer(train_output_path: str, eval_size: int, eval_seed: int,
-                     batch_size: int, device: str, shuffle: bool = True):
+                     batch_size: int, device: str, shuffle: bool = True,
+                     model_variant: str = 'last'):
     """Load a trained transformer and build an eval dataloader on fresh RHM data.
 
     The dataloader is built via init.init_data(), which by default creates a
     shuffled train_loader. For analysis scripts that need to line up batch rows
     with ground truth latents, pass shuffle=False.
 
+    model_variant selects which weights to load:
+      - 'last': blob['output']['model']         (default; back-compat for old SAEs)
+      - 'best': blob['output']['best']['model'] (lowest test-loss checkpoint)
+
     Returns: (model, loader, cfg, rules, rules_source)
     """
+    if model_variant not in ('best', 'last'):
+        raise ValueError(f"model_variant must be 'best' or 'last', got {model_variant!r}")
+
     blob = torch.load(train_output_path, map_location='cpu', weights_only=False)
     if not isinstance(blob, dict) or 'config' not in blob or 'output' not in blob:
         raise ValueError(f'Invalid train_output format: {train_output_path}')
-    if 'model' not in blob['output']:
-        raise ValueError(
-            f'train_output missing output.model - re-run transformer training '
-            f'with --save_models: {train_output_path}'
-        )
+    output = blob['output']
+
+    if model_variant == 'best':
+        best = output.get('best')
+        if not isinstance(best, dict) or 'model' not in best:
+            raise RuntimeError(
+                f"load_transformer: model_variant='best' requested but "
+                f"{train_output_path!r} has no output['best']['model']. "
+                f"This transformer artifact predates best-weights tracking; "
+                f"re-train it, or load an SAE that was trained on 'last' weights."
+            )
+        state = best['model']
+    else:
+        if 'model' not in output:
+            raise RuntimeError(
+                f"load_transformer: model_variant='last' requested but "
+                f"{train_output_path!r} has no output['model']."
+            )
+        state = output['model']
 
     cfg = copy.deepcopy(blob['config'])
     rules, rules_source = resolve_rules(blob, train_output_path)
@@ -120,7 +142,7 @@ def load_transformer(train_output_path: str, eval_size: int, eval_seed: int,
         )
 
     model = init.init_model(cfg)
-    model.load_state_dict(blob['output']['model'])
+    model.load_state_dict(state)
     model = model.to(device).eval()
     for p in model.parameters():
         p.requires_grad = False
@@ -190,4 +212,7 @@ def load_sae(ckpt_path: str, input_dim, device: str, load_model: bool = True):
         'sae_rules_source': dataset_split.get('rules_source', None),
         'sae_token_idx': int(setup.get('sae_token_idx', 0)),
         'act_scale': act_scale,
+        # which transformer weights this SAE was trained against. Old SAE artifacts
+        # predate this field and were always trained on 'last' weights.
+        'model_variant': source.get('model_variant', 'last'),
     }

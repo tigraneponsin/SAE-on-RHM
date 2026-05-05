@@ -232,12 +232,10 @@ def plot_curves(records, loss_types, max_steps, outfile, color_by='lr',
         fontsize=9,
     )
 
-    lambda_vals   = sorted({r['lambda_l1'] for r in records})
-    lambda_str    = ', '.join(f'{v:.3g}' for v in lambda_vals)
     curve_sources = sorted({r.get('curve_source', '?') for r in records})
     source_str    = ' / '.join(curve_sources)
     fig.suptitle(
-        f'SAE loss curves [{source_str}]  (λ₁ = {lambda_str})',
+        f'SAE loss curves [{source_str}]',
         fontsize=13, y=0.99,
     )
 

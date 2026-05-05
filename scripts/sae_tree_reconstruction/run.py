@@ -77,22 +77,28 @@ def _validate_artifact(art: dict, path: Path) -> None:
         )
 
 
-def _resolve_train_output(ckpt_path: str) -> tuple[str, dict]:
-    """Read the SAE checkpoint and return (train_output, dataset_split).
+def _resolve_train_output(ckpt_path: str) -> tuple[str, dict, str]:
+    """Read the SAE checkpoint and return (train_output, dataset_split, model_variant).
 
     dataset_split records the seeds used during transformer + SAE training:
     transformer_seed_sample, train_seed_sample, eval_seed_sample. We carry
     these forward so the tree-reconstruction script can refuse to evaluate
     on data the model has already seen.
+
+    model_variant records which transformer weights this SAE was trained on
+    ('best' or 'last'). Old SAE artifacts predate this field and default to
+    'last' to preserve their training behavior.
     """
     blob = torch.load(ckpt_path, map_location='cpu', weights_only=False)
-    src = blob.get('source', {}).get('train_output', '')
+    source = blob.get('source', {}) or {}
+    src = source.get('train_output', '')
     if not src:
         raise ValueError(
             f'{ckpt_path}: no source.train_output recorded in SAE checkpoint.'
         )
     split = blob.get('sae_dataset_split', {}) or {}
-    return src, split
+    model_variant = source.get('model_variant', 'last')
+    return src, split, model_variant
 
 
 def _group_artifacts(paths: list[Path]) -> tuple[dict, dict]:
@@ -106,6 +112,7 @@ def _group_artifacts(paths: list[Path]) -> tuple[dict, dict]:
     common: dict = {}
     train_outputs: dict = {}
     dataset_splits: dict = {}
+    model_variants: dict = {}
     for p in paths:
         art = _load_artifact(p)
         _validate_artifact(art, p)
@@ -121,9 +128,10 @@ def _group_artifacts(paths: list[Path]) -> tuple[dict, dict]:
                 f'{p.name}: cls_token mode is out of scope for tree '
                 f'reconstruction.'
             )
-        src, split = _resolve_train_output(art['ckpt_path'])
+        src, split, mv = _resolve_train_output(art['ckpt_path'])
         train_outputs[layer_id] = src
         dataset_splits[layer_id] = split
+        model_variants[layer_id] = mv
         by_layer[layer_id] = art
 
     if not by_layer:
@@ -138,6 +146,7 @@ def _group_artifacts(paths: list[Path]) -> tuple[dict, dict]:
     common['mode'] = str(ref['mode'])
     common['sae_token_idx'] = int(ref['sae_token_idx'])
     common['train_output'] = train_outputs[int(ref['layer_id'])]
+    common['model_variant'] = model_variants[int(ref['layer_id'])]
 
     for layer_id, art in by_layer.items():
         if dict(art['rhm']) != common['rhm']:
@@ -159,6 +168,13 @@ def _group_artifacts(paths: list[Path]) -> tuple[dict, dict]:
             raise ValueError(
                 f'transformer source mismatch at layer {layer_id}: '
                 f'{train_outputs[layer_id]} vs {common["train_output"]}.'
+            )
+        if model_variants[layer_id] != common['model_variant']:
+            raise ValueError(
+                f'model_variant mismatch at layer {layer_id}: '
+                f'{model_variants[layer_id]} vs {common["model_variant"]}. '
+                f'All SAEs in a tree-reconstruction run must have been trained '
+                f'against the same transformer weights.'
             )
 
     L = int(common['rhm']['L'])
@@ -658,10 +674,12 @@ def main() -> int:
             return 2
 
     # ---- Load transformer + rules ----
-    print(f'Loading transformer from: {common["train_output"]}')
+    print(f'Loading transformer from: {common["train_output"]} '
+          f'(variant={common["model_variant"]})')
     model, _loader, cfg, rules, rules_source = load_transformer(
         common['train_output'], eval_size_recon, eval_seed_recon,
         args.batch_size, device, shuffle=False,
+        model_variant=common['model_variant'],
     )
     print(f'  rules source: {rules_source}')
     has_cls = hasattr(model, 'cls_token')

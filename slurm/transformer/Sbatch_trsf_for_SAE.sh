@@ -6,7 +6,7 @@
 #SBATCH -e /dev/null
 
 #SBATCH --partition h100
-#SBATCH --time 1:00:00
+#SBATCH --time 10:00:00
 #SBATCH --mem 90G
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
@@ -27,6 +27,8 @@
 # $11=dropout           (default: 0.1)
 # $12=save_models       (deprecated for this launcher; rules tracking for SAE requires saving models and is forced on)
 # $13=weight_decay      (default: 0.0)
+# $14=warmup_time       (steps; if set, enables cosine-warmup scheduler; requires $15)
+# $15=decay_time        (steps; required when $14 is set)
 
 DEVICE="cuda"
 MODE="class"
@@ -50,6 +52,8 @@ DROPOUT=${11:-0.1}
 BATCH_SIZE=${5:-32}
 SAVE_MODELS=${12:-1}
 WEIGHT_DECAY=${13:-0.0}
+WARMUP_TIME=${14:-""}
+DECAY_TIME=${15:-""}
 
 # Keep width for compatibility/logging in existing training code
 WIDTH=$EMBEDDING_DIM
@@ -79,6 +83,19 @@ fi
 SAVE_MODELS=1
 SAVE_MODEL_ARGS+=(--save_models)
 
+SCHEDULER_ARGS=()
+if [[ -n "$WARMUP_TIME" && -n "$DECAY_TIME" ]]; then
+    SCHEDULER_ARGS+=(--scheduler cosine-warmup --warmup_time "$WARMUP_TIME" --decay_time "$DECAY_TIME")
+elif [[ -n "$DECAY_TIME" ]]; then
+    SCHEDULER_ARGS+=(--scheduler cosine --decay_time "$DECAY_TIME")
+fi
+
+SCHED_TAG=""
+if [[ -n "$WARMUP_TIME" && -n "$DECAY_TIME" ]]; then
+    SCHED_TAG="_sched_coswarm_wu${WARMUP_TIME}_decay${DECAY_TIME}"
+elif [[ -n "$DECAY_TIME" ]]; then
+    SCHED_TAG="_sched_cosine_decay${DECAY_TIME}"
+fi
 OUTNAME="RESULT_TRFCLASS_v_${NUM_CLASSES}_L_${NUM_LAYERS}_m=${NUM_SYNONYMS}_P_${TRAIN_SIZE}_${SLURM_ARRAY_TASK_ID}_emb_${EMBEDDING_DIM}_h_${NUM_HEADS}_lr_${LEARNING_RATE}_dropout_${DROPOUT}_wd_${WEIGHT_DECAY}.pkl"
 
 RESULTS_DIR="/work/pcsl/ponsin/Mean_Transformer/Transformer_for_SAE_nores/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}_wdecay_${WEIGHT_DECAY}/"
@@ -145,7 +162,8 @@ srun python /home/ponsin/SAE-on-RHM/main.py \
     --save_freq "$SAVE_FREQ" \
     --loss_threshold "$LOSS_THRESHOLD" \
     --outname "$OUTNAME" \
-    "${SAVE_MODEL_ARGS[@]}"
+    "${SAVE_MODEL_ARGS[@]}" \
+    "${SCHEDULER_ARGS[@]}"
 
 echo FINISHED AT
 date

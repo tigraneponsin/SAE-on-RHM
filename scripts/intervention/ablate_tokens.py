@@ -75,6 +75,11 @@ def parse_args():
                    help='Optional path to save per-(layer, position) mean L2 norm CSV')
     p.add_argument('--resample_seed', type=int, default=0,
                    help='Seed for resample ablation RNG (default 0)')
+    p.add_argument('--model_variant', choices=['best', 'last'], default='last',
+                   help="Which transformer weights to load: 'best' (lowest test loss) "
+                        "or 'last' (final step). Default: last for back-compat. Pair with "
+                        "--model_variant best when reproducing analysis aligned to an SAE "
+                        "trained on the best transformer weights.")
     return p.parse_args()
 
 
@@ -249,6 +254,7 @@ def main():
     model, loader, _cfg, _rules, rules_source = load_transformer(
         args.train_output, args.eval_size, args.eval_seed,
         args.batch_size, device, shuffle=False,
+        model_variant=args.model_variant,
     )
     has_cls = hasattr(model, 'cls_token')
     pos_offset = 1 if has_cls else 0
@@ -257,7 +263,7 @@ def main():
     seq_len = num_leaves + (1 if has_cls else 0)
     random_err = 1.0 - 1.0 / model.num_classes
 
-    print(f'Loaded transformer from {args.train_output}')
+    print(f'Loaded transformer from {args.train_output} (variant={args.model_variant})')
     print(f'  rules_source={rules_source}  has_cls={has_cls}  num_blocks={num_blocks}')
     print(f'  num_leaves={num_leaves}  num_classes={model.num_classes}')
 

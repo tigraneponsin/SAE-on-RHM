@@ -119,6 +119,7 @@ srun python "${REPO_DIR}/scripts/sae_eval/run.py" \
     --batch_size "${BATCH_SIZE}" \
     --device "${DEVICE}" \
     --with-all \
+    --outcsv "${OUT_DIR}/sweep_metrics.csv" \
     "${DEDUPE_ARGS[@]}"
 EXIT_CODE=$?
 set -e

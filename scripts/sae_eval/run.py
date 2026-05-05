@@ -316,19 +316,28 @@ def main() -> int:
         print('No valid SAE checkpoints found.')
         return 0
 
+    # Group by (train_output, model_variant) so SAEs trained on different
+    # transformer-weight variants of the same artifact don't share a forward pass.
     by_transformer: dict = {}
     for r in records:
-        by_transformer.setdefault(r['train_output'], []).append(r)
+        by_transformer.setdefault((r['train_output'], r['model_variant']), []).append(r)
 
     rows: list = []       # one dict per SAE, for the main CSV
     artifacts: list = []  # for per-position CSV (holds artifact dicts in-memory)
 
-    for train_output_path, group in by_transformer.items():
-        print(f'Loading transformer from: {train_output_path}')
+    for (train_output_path, model_variant), group in by_transformer.items():
+        variants_in_group = {r['model_variant'] for r in group}
+        if len(variants_in_group) > 1:
+            raise RuntimeError(
+                f"SAE artifacts for transformer {train_output_path!r} disagree "
+                f"on model_variant: {sorted(variants_in_group)}."
+            )
+        print(f'Loading transformer from: {train_output_path} (variant={model_variant})')
         try:
             model, _loader, cfg, rules, rules_source = load_transformer(
                 train_output_path, args.eval_size, args.eval_seed,
                 args.batch_size, device, shuffle=False,
+                model_variant=model_variant,
             )
         except Exception as exc:
             print(f'  ERROR loading transformer: {exc}')

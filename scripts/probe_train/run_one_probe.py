@@ -52,6 +52,13 @@ from linear_probe import (
 # ---------------------------------------------------------------------------
 
 def main():
+    print(
+        "[WARN] Probe scripts always load the LAST transformer weights "
+        "(output['model']), not output['best']['model']. If you trained an SAE "
+        "on the BEST weights and want probe results to be comparable, results "
+        "may not align.",
+        file=sys.stderr,
+    )
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
