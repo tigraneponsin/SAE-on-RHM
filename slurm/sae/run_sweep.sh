@@ -29,7 +29,7 @@
 # =============================================================================
 # USER: set these two paths
 # =============================================================================
-SWEEP_CONFIGS=/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_5_m_4_wdecay_0.0/sweep_alltokens_layer0_lambda1_zoom/sweep_configs.json
+SWEEP_CONFIGS=/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_10*512/v_16_L_5_m_4_wdecay_0.0001/sweep_alltokens_layer1_lambda1_zoom/sweep_configs.json
 REPO_DIR=/home/ponsin/SAE-on-RHM
 # =============================================================================
 
@@ -64,7 +64,6 @@ echo "SWEEP_CONFIGS: ${SWEEP_CONFIGS}"
 echo "Output:     ${OUTNAME}"
 echo "======================================================================"
 
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 srun python "${REPO_DIR}/scripts/sae_sweep/run_one.py" \
     --sweep_configs "${SWEEP_CONFIGS}" \

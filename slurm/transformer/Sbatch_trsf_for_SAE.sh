@@ -6,7 +6,7 @@
 #SBATCH -e /dev/null
 
 #SBATCH --partition h100
-#SBATCH --time 10:00:00
+#SBATCH --time 01:00:00
 #SBATCH --mem 90G
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
@@ -67,7 +67,7 @@ ACCUMULATION=1
 INPUT_FORMAT="long"
 WHITENING=0
 
-MODEL="transformer_meanclass_nores"
+MODEL="transformer_meanclass"
 # Optional no-residual variant:
 # MODEL="transformer_meanclass_nores"
 OPTIM="adam"
@@ -98,7 +98,7 @@ elif [[ -n "$DECAY_TIME" ]]; then
 fi
 OUTNAME="RESULT_TRFCLASS_v_${NUM_CLASSES}_L_${NUM_LAYERS}_m=${NUM_SYNONYMS}_P_${TRAIN_SIZE}_${SLURM_ARRAY_TASK_ID}_emb_${EMBEDDING_DIM}_h_${NUM_HEADS}_lr_${LEARNING_RATE}_dropout_${DROPOUT}_wd_${WEIGHT_DECAY}.pkl"
 
-RESULTS_DIR="/work/pcsl/ponsin/Mean_Transformer/Transformer_for_SAE_nores/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}_wdecay_${WEIGHT_DECAY}/"
+RESULTS_DIR="/work/pcsl/ponsin/Mean_Transformer/Transformer_for_SAE/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}_wdecay_${WEIGHT_DECAY}/"
 
 mkdir -p "$RESULTS_DIR"
 

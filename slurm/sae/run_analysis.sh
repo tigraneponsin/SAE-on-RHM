@@ -26,7 +26,7 @@
 #SBATCH --account pcsl
 
 # -- Resources ----------------------------------------------------------------
-#SBATCH --time=00:10:00
+#SBATCH --time=00:30:00
 #SBATCH --partition=h100
 #SBATCH --gres=gpu:1
 #SBATCH --mem=90G

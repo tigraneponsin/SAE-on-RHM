@@ -139,6 +139,7 @@ def _collect_eval_loss(sae, model, eval_loader, layer_id, activation_source,
             sum_sparse += sparse * bs
             n_tokens += bs
     hook.remove()
+    torch.cuda.empty_cache()
     if n_tokens == 0:
         return float('nan'), float('nan'), float('nan')
     return sum_total / n_tokens, sum_recon / n_tokens, sum_sparse / n_tokens
@@ -269,6 +270,7 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
                         eval_chunk_tokens=eval_chunk_tokens,
                         act_scale=act_scale,
                     )
+                    activation_buffer.clear()
                     eval_curve_steps.append(0)
                     eval_curve_total.append(ev_total)
                     eval_curve_recon.append(ev_recon)
@@ -307,6 +309,7 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
                         eval_chunk_tokens=eval_chunk_tokens,
                         act_scale=act_scale,
                     )
+                    activation_buffer.clear()
                     eval_curve_steps.append(step + 1)
                     eval_curve_total.append(ev_total)
                     eval_curve_recon.append(ev_recon)
