@@ -84,6 +84,7 @@ srun python "${REPO_DIR}/scripts/intervention/ablate_tokens.py" \
     --experiments "${EXPERIMENTS_JSON}" \
     --eval_size "${EVAL_SIZE}" \
     --batch_size "${BATCH_SIZE}" \
+    --model_variant best \
     --outcsv "${OUT_DIR}/ablate.csv" \
     --norms_csv "${OUT_DIR}/norms.csv"
 EXIT_CODE=$?

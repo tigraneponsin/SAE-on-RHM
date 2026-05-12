@@ -63,6 +63,8 @@ def main():
                         help="DPI for saved figure (default: 150)")
     parser.add_argument("--no-sharey", action="store_true",
                         help="Disable shared y-axis across subplots")
+    parser.add_argument("--ncols", type=int, default=3,
+                        help="Maximum subplots per row (default: 3)")
     args = parser.parse_args()
 
     layer_data = []
@@ -71,12 +73,14 @@ def main():
         layer_data.append((layer_idx, baseline_err, positions))
 
     n = len(layer_data)
-    fig, axes = plt.subplots(1, n, figsize=(5 * n, 5), sharey=not args.no_sharey,
-                             squeeze=False)
-    axes = axes[0]
+    ncols = max(1, min(args.ncols, n))
+    nrows = (n + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 5 * nrows),
+                             sharey=not args.no_sharey, squeeze=False)
+    flat_axes = axes.flatten()
     fig.suptitle("Token ablation: normalized classification error", fontsize=12)
 
-    for ax, (layer_idx, baseline_err, positions) in zip(axes, layer_data):
+    for ax, (layer_idx, baseline_err, positions) in zip(flat_axes, layer_data):
         for mode in args.modes:
             if mode not in positions:
                 continue
@@ -100,6 +104,9 @@ def main():
         ax.tick_params(labelsize=8)
         ax.grid(linestyle="--", linewidth=0.4, alpha=0.6)
         ax.legend(fontsize=8, frameon=False, loc="upper left")
+
+    for ax in flat_axes[n:]:
+        ax.set_visible(False)
 
     plt.tight_layout()
 

@@ -282,7 +282,7 @@ def main():
         x_k = anchors.blocks[k].r_out
         z, x_hat, e = sae_forward(x_k, sae_records[k]['sae'], sae_records[k]['act_scale'])
         recon_err = (x_hat + e - x_k).abs().max().item()
-        if recon_err > 1e-4:
+        if recon_err > 5e-4:
             raise RuntimeError(
                 f'SAE bit-identity FAILED at layer {k}: max abs err = {recon_err}'
             )

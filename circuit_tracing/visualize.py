@@ -175,13 +175,13 @@ def _edge_widths_alphas(weights, max_width=4.0, min_width=0.2,
 def _node_visuals():
     """Per-kind defaults: marker, base_size, fill_color, edge_color, label_kw."""
     return {
-        'feature':   {'marker': 'o', 'base_size': 60.0,
+        'feature':   {'marker': 'o', 'base_size': 80.0,
                       'fill': '#dddddd', 'edge': '#222222'},
         'error':     {'marker': 's', 'base_size': 40.0,
                       'fill': '#bdbdbd', 'edge': '#404040'},
-        'embedding': {'marker': '^', 'base_size': 70.0,
+        'embedding': {'marker': '^', 'base_size': 100.0,
                       'fill': '#ffe5b4', 'edge': '#7a4f00'},
-        'logit':     {'marker': 'D', 'base_size': 90.0,
+        'logit':     {'marker': 'D', 'base_size': 120.0,
                       'fill': '#cfe2ff', 'edge': '#0b3d91'},
     }
 
@@ -401,7 +401,8 @@ def render(run_dir: Path, out_path: Path,
         elif kind == 'logit':
             label = str(int(nodes[key]['class']))
         if label is not None:
-            ax.annotate(label, (x, y),
+            y_label = y - 0.06 if kind == 'embedding' else y
+            ax.annotate(label, (x, y_label),
                         ha='center', va='center',
                         fontsize=6, zorder=4, color='#111111')
 
@@ -417,6 +418,10 @@ def render(run_dir: Path, out_path: Path,
     ax.set_xlabel('leaf position (logits spread across same x-range)')
     ax.tick_params(axis='x', labelsize=8)
     ax.grid(axis='y', linestyle=':', alpha=0.3)
+    # Dashed vertical separators between leaf positions.
+    for p in range(N + 1):
+        ax.axvline(p - 0.5, color='#aaaaaa', linestyle='--',
+                   linewidth=0.6, alpha=0.5, zorder=0)
     ax.set_axisbelow(True)
 
     # Title strip.

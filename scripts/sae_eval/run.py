@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import sys
 from pathlib import Path
 
@@ -460,12 +461,22 @@ def main() -> int:
                 'batch_size': artifact['batch_size'],
             }
             rows.append(_row_from_artifact(artifact, flags, extras))
-            artifacts.append({
-                'ckpt': Path(ckpt_path).name,
-                'lambda_l1': artifact['lambda_l1'],
-                'lr': artifact['lr'],
-                'artifact': artifact,
-            })
+            if args.per_position_csv:
+                artifacts.append({
+                    'ckpt': Path(ckpt_path).name,
+                    'lambda_l1': artifact['lambda_l1'],
+                    'lr': artifact['lr'],
+                    'artifact': artifact,
+                })
+            del artifact, streaming_artifact, sae, entry
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        del model, trees, rules
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # Emit CSVs.
     if args.outcsv:
