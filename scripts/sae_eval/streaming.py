@@ -181,9 +181,12 @@ def select_activation_tokens(act: torch.Tensor, mode: str, has_cls: bool,
                              token_idx: int):
     """Slice the SAE-input view from a (batch, seq_len, emb_dim) activation.
 
+    For 'mean_pooled', the caller is expected to hook `model.ln_f` so `act` is
+    already post-ln_f; this function only mean-pools over the sequence dim.
+
     Returns (selected, token_positions) where token_positions is a 1-D
     LongTensor of 0-based real-token indices, or tensor([-1]) for
-    cls_token mode (sentinel: CLS is not a real-token position).
+    cls_token / mean_pooled modes (sentinel: not a real-token position).
     """
     if mode == 'cls_token':
         if not has_cls:
@@ -198,9 +201,23 @@ def select_activation_tokens(act: torch.Tensor, mode: str, has_cls: bool,
         selected = act[:, 1:, :] if has_cls else act
         num_real = selected.size(1)
         token_positions = torch.arange(num_real, dtype=torch.long)
+    elif mode == 'mean_pooled':
+        selected = act.mean(dim=1, keepdim=True)
+        token_positions = torch.tensor([-1], dtype=torch.long)
     else:
         raise ValueError(f'Unknown sae_activation_source mode: {mode!r}')
     return selected, token_positions
+
+
+def _hook_module(model, layer_id: int, mode: str):
+    """Return the module to attach the activation-capture hook to.
+
+    For 'mean_pooled', hook `model.ln_f` so the captured tensor is post-ln_f.
+    For all other modes, hook `model.blocks[layer_id]` (pre-ln_f).
+    """
+    if mode == 'mean_pooled':
+        return model.ln_f
+    return model.blocks[layer_id]
 
 
 # ---------------------------------------------------------------------------
@@ -343,9 +360,9 @@ def stream_sae_eval(
         index_layout = None
         num_targets = 0
 
-    # ---- Hook the transformer block ----
+    # ---- Hook the transformer block (or ln_f for mean_pooled) ----
     buf: list[torch.Tensor] = []
-    hook = model.blocks[layer_id].register_forward_hook(
+    hook = _hook_module(model, layer_id, mode).register_forward_hook(
         lambda _m, _i, o: buf.append(o.detach())
     )
 
@@ -677,9 +694,7 @@ def stream_sae_eval(
         H_bar_raw_norm = torch.full((P,), float('nan'))
         H_bar_dec_norm = torch.full((P,), float('nan'))
 
-        if mode != 'cls_token':
-            # Map SAE position -> real-token index p_real -> (matched_level, matched_j).
-            matched_level = L_levels - 1 - layer_id
+        if mode not in {'cls_token'}:
             baseline_mean_cpu = result['baseline_mean']              # [P, F] float32
             firing_rate_cpu = result['firing_rate']                  # [P, F]
             decoder_norms_cpu = result['decoder_norms']              # [F]
@@ -689,8 +704,16 @@ def stream_sae_eval(
                            for idx, g in enumerate(index_layout)}
 
             for p_idx in range(P):
-                p_real = int(saved_token_positions[p_idx].item())
-                matched_j = p_real // (s_tup ** (1 + layer_id))
+                if mode == 'mean_pooled':
+                    # Mean-pooled aggregates all leaf positions, so the
+                    # leaf-position -> (level, j) mapping does not apply.
+                    # Condition entropy on the root class instead.
+                    matched_level = 0
+                    matched_j = 0
+                else:
+                    matched_level = L_levels - 1 - layer_id
+                    p_real = int(saved_token_positions[p_idx].item())
+                    matched_j = p_real // (s_tup ** (1 + layer_id))
                 g_idx = group_index.get((matched_level, matched_j))
                 if g_idx is None:
                     continue  # shouldn't happen on well-formed trees
@@ -726,7 +749,23 @@ def _make_sae_replacement_hook(sae, mode: str, has_cls: bool, token_idx: int,
                                act_scale: float):
     """Forward-hook that replaces the layer's residuals with the SAE reconstruction
     at the positions the SAE was trained on. Residuals at other positions pass through.
+
+    For 'mean_pooled', this hook is intended to be registered on `model.ln_f`
+    (post-ln_f), not on a transformer block. It runs the SAE on the
+    mean-pooled output and returns a tensor whose mean over dim=1 equals the
+    SAE reconstruction, so the downstream `mean_out = x.mean(dim=1)` in the
+    meanclass classifier reads the SAE recon exactly.
     """
+    if mode == 'mean_pooled':
+        def hook(_m, _i, output):
+            pooled = output.mean(dim=1)               # [B, D]
+            flat = pooled * act_scale
+            recon, _ = sae(flat)                      # [B, D]
+            recon = recon / act_scale
+            B, T, D = output.size(0), output.size(1), output.size(-1)
+            return recon.unsqueeze(1).expand(B, T, D)
+        return hook
+
     def hook(_m, _i, output):
         out = output.clone()
         if mode == 'cls_token':
@@ -801,13 +840,26 @@ def stream_classification_impact(
         dataset, batch_size=batch_size, shuffle=False, num_workers=0,
     )
 
+    if mode == 'mean_pooled':
+        last_layer = len(model.blocks) - 1
+        if layer_id != last_layer:
+            raise NotImplementedError(
+                f'classification_impact for mean_pooled is only supported on the '
+                f'final transformer block (got layer_id={layer_id}, '
+                f'num_layers={len(model.blocks)}).'
+            )
+        if has_cls:
+            raise NotImplementedError(
+                'mean_pooled is incompatible with has_cls=True.'
+            )
+
     baseline_acc, baseline_ce = _classification_pass(model, loader, device)
     baseline_err = 1.0 - baseline_acc
 
     hook_fn = _make_sae_replacement_hook(sae, mode, has_cls, token_idx, act_scale)
     sae_acc, sae_ce = _classification_pass(
         model, loader, device,
-        hook_module=model.blocks[layer_id], hook_fn=hook_fn,
+        hook_module=_hook_module(model, layer_id, mode), hook_fn=hook_fn,
     )
     sae_err = 1.0 - sae_acc
     random_err = 1.0 - 1.0 / float(model.num_classes)

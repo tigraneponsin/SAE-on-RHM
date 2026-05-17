@@ -91,7 +91,7 @@ def _parse_args():
 
     # --- fixed settings ---
     p.add_argument('--sae_activation_source', type=str, default=None,
-                   choices=['all_tokens', 'cls_token', 'one_token'])
+                   choices=['all_tokens', 'cls_token', 'one_token', 'mean_pooled'])
     p.add_argument('--sae_token_idx', type=int, default=None)
     p.add_argument('--sae_eval_size', type=int, default=None)
     p.add_argument('--sae_log_points', type=int, default=None,
@@ -133,8 +133,8 @@ def _build_grid(args):
     return grid
 
 
-def _trsf_tag(train_output_path: str) -> str:
-    """Load the transformer artifact and build a compact identifier."""
+def _trsf_meta(train_output_path: str):
+    """Load the transformer artifact, return (tag, cfg)."""
     try:
         import torch
     except ImportError:
@@ -155,13 +155,14 @@ def _trsf_tag(train_output_path: str) -> str:
         print(f'ERROR: transformer config is missing fields: {missing}', file=sys.stderr)
         sys.exit(1)
 
-    return (
+    tag = (
         f"v{cfg.num_features}"
         f"_L{cfg.num_layers}"
         f"_m{cfg.num_synonyms}"
         f"_P{cfg.train_size}"
         f"_emb{cfg.embedding_dim}"
     )
+    return tag, cfg
 
 
 def _activation_tag(c: dict) -> str:
@@ -173,6 +174,8 @@ def _activation_tag(c: dict) -> str:
         return 'cls'
     if src == 'one_token':
         return f"tok{c['sae_token_idx']}"
+    if src == 'mean_pooled':
+        return 'meanpool'
     return src
 
 
@@ -212,8 +215,26 @@ def main():
 
     grid = _build_grid(args)
 
-    trsf_tag = _trsf_tag(train_output)
+    trsf_tag, trsf_cfg = _trsf_meta(train_output)
     print(f'Transformer tag: {trsf_tag}')
+
+    if activation_source == 'mean_pooled':
+        model_name = getattr(trsf_cfg, 'model', None)
+        if model_name not in {'transformer_meanclass', 'transformer_meanclass_nores'}:
+            print(
+                f'ERROR: sae_activation_source=mean_pooled requires a meanclass transformer, '
+                f'but transformer artifact has model={model_name!r}.',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        last_layer = int(trsf_cfg.num_layers) - 1
+        requested = grid.get('sae_layer')
+        if requested != [last_layer]:
+            print(
+                f'NOTE: mean_pooled mode ignores sae_layer={requested}; '
+                f'forcing sae_layer=[{last_layer}] (the last block).'
+            )
+        grid['sae_layer'] = [last_layer]
 
     keys = list(grid.keys())
     values = [grid[k] for k in keys]

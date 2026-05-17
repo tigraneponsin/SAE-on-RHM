@@ -22,6 +22,9 @@ Two-stage algorithm:
         edge_score[t, s] = A_sub[t, s] * node_score_sub[t]
      (only over actual edges). Sort desc, keep prefix until
      cumsum / total >= edge_threshold.
+  7. Reachability trim: keep only edges on some path
+     (embedding|error) -> ... -> logit within the kept-edge set, dropping
+     any newly orphaned nodes from kept_node_keys.
 
 Inputs:
 - nodes: dict node_key -> attrs (must contain 'kind').
@@ -228,6 +231,56 @@ def _keep_prefix(scores: torch.Tensor, threshold: float) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
+# Reachability trim
+# ---------------------------------------------------------------------------
+
+def _reachability_trim(
+    kept_edges: list, kept_node_keys: set, nodes: dict,
+) -> tuple[list, set]:
+    """Keep only edges on some path input -> ... -> logit in kept_edges.
+
+    Inputs are embedding/error nodes (no incoming edges in this DAG).
+    Sinks are logit nodes. A node survives iff it is forward-reachable from
+    some input AND backward-reachable from some logit, using only kept_edges.
+    An edge survives iff both endpoints survive.
+    """
+    if not kept_edges:
+        # No edges -> no node can sit on a source->logit path. Keep only
+        # nodes that are themselves both source and sink, which is empty.
+        return [], set()
+
+    fwd: dict = {}
+    bwd: dict = {}
+    for (src, dst, _) in kept_edges:
+        fwd.setdefault(src, []).append(dst)
+        bwd.setdefault(dst, []).append(src)
+
+    sources = {k for k in kept_node_keys if k[0] in ('embed', 'err')}
+    sinks = {k for k in kept_node_keys if k[0] == 'logit'}
+
+    def _bfs(seeds: set, adj: dict) -> set:
+        seen = set(seeds)
+        frontier = list(seeds)
+        while frontier:
+            node = frontier.pop()
+            for nxt in adj.get(node, ()):  # neighbors via adj
+                if nxt not in seen:
+                    seen.add(nxt)
+                    frontier.append(nxt)
+        return seen
+
+    forward_reachable = _bfs(sources, fwd)
+    backward_reachable = _bfs(sinks, bwd)
+    survivors = forward_reachable & backward_reachable
+
+    trimmed_edges = [
+        (s, d, w) for (s, d, w) in kept_edges
+        if s in survivors and d in survivors
+    ]
+    return trimmed_edges, survivors
+
+
+# ---------------------------------------------------------------------------
 # Public entry
 # ---------------------------------------------------------------------------
 
@@ -346,6 +399,15 @@ def prune_indirect_influence(
             keep_edge_local = _keep_prefix(edge_scores_t, edge_threshold)
         kept_edges = [sub_edges[i] for i in range(len(sub_edges)) if bool(keep_edge_local[i].item())]
 
+    # ---- Reachability trim ----
+    # Drop edges (and their now-orphan endpoints) that do not lie on any
+    # path embedding/error -> ... -> logit within the current kept-edge set.
+    # Without this pass we can keep edges into a feature whose own outgoing
+    # edges were all pruned, leaving visually noisy dead-end branches.
+    kept_edges, kept_node_keys = _reachability_trim(
+        kept_edges, kept_node_keys, nodes,
+    )
+
     # ---- Post-prune counts ----
     counts_post = {'feature': 0, 'error': 0, 'embedding': 0, 'logit': 0}
     for k in kept_node_keys:
@@ -368,45 +430,56 @@ def prune_indirect_influence(
     completeness_score = (num_w / den_w) if den_w > 0 else 0.0
 
     # ---- replacement_score ----
-    # On the pruned subgraph, zero out the COLUMNS of A_sub corresponding to
-    # error nodes (block any flow leaving an error node), recompute B, and
-    # compare embedding -> logit path mass against the original B_sub.
-    # For sink_mode=softmax_logits, average per-class with softmax weights.
-    err_idx = [i for i, k in enumerate(ordered_keys) if k[0] == 'err']
+    # Computed on the final reachability-trimmed kept-edge graph.
+    # Build W_trim from kept_edges, row-normalize to A_trim, sum the
+    # polynomial B_trim = A_trim + A_trim^2 + ... For each logit c the
+    # total polynomial path mass arriving from embedding sources is
+    # emb_mass[c], from error sources err_mass[c]. Then
+    #     replacement_score[c] = emb_mass[c] / (emb_mass[c] + err_mass[c]).
+    # 1.0 means the trimmed circuit explains the logit entirely through
+    # feature/embedding pathways; 0.0 means error terms dominate. Errors
+    # plugged in directly at the logit count more than errors deep in the
+    # feature hierarchy, since the latter get diluted by feature mixing.
     embed_idx = [i for i, k in enumerate(ordered_keys) if k[0] == 'embed']
+    err_idx = [i for i, k in enumerate(ordered_keys) if k[0] == 'err']
     logit_idx = [i for i, k in enumerate(ordered_keys) if k[0] == 'logit']
 
-    A_no_err = A_sub.clone()
-    if err_idx:
-        A_no_err[:, err_idx] = 0.0
-    B_no_err = _indirect_influence(A_no_err, max_depth)
-
-    def _emb_to_logit_mass(B_mat: torch.Tensor) -> dict[int, float]:
-        """Per-logit-class total embedding-to-logit mass under B."""
-        out = {}
-        for li in logit_idx:
-            c = int(ordered_keys[li][1])
-            mass = 0.0
-            for ei in embed_idx:
-                mass += float(B_mat[li, ei].item())
-            out[c] = mass
-        return out
-
-    mass_full = _emb_to_logit_mass(B_sub)
-    mass_no_err = _emb_to_logit_mass(B_no_err)
-
-    if sink_mode == 'true_class':
-        full_v = mass_full.get(int(y_true), 0.0)
-        rep_v = mass_no_err.get(int(y_true), 0.0)
-        replacement_score = (rep_v / full_v) if full_v > 0 else 0.0
+    if len(kept_edges) == 0:
+        replacement_score = 0.0
     else:
-        probs = torch.softmax(logits.to(device=device, dtype=dtype), dim=0).tolist()
-        weighted_full = 0.0
-        weighted_rep = 0.0
-        for c, p in enumerate(probs):
-            weighted_full += p * mass_full.get(c, 0.0)
-            weighted_rep += p * mass_no_err.get(c, 0.0)
-        replacement_score = (weighted_rep / weighted_full) if weighted_full > 0 else 0.0
+        N_nodes = len(ordered_keys)
+        W_trim = torch.zeros(N_nodes, N_nodes, device=device, dtype=dtype)
+        for (src, dst, w) in kept_edges:
+            W_trim[idx_of[dst], idx_of[src]] += float(w)
+        A_trim = _row_normalize_abs(W_trim)
+        B_trim = _indirect_influence(A_trim, max_depth)
+
+        def _src_mass(src_indices: list) -> dict[int, float]:
+            out = {}
+            for li in logit_idx:
+                c = int(ordered_keys[li][1])
+                mass = 0.0
+                for si in src_indices:
+                    mass += float(B_trim[li, si].item())
+                out[c] = mass
+            return out
+
+        emb_mass = _src_mass(embed_idx)
+        err_mass = _src_mass(err_idx)
+
+        def _per_class_score(c: int) -> float:
+            e = emb_mass.get(c, 0.0)
+            r = err_mass.get(c, 0.0)
+            denom = e + r
+            return (e / denom) if denom > 0 else 0.0
+
+        if sink_mode == 'true_class':
+            replacement_score = _per_class_score(int(y_true))
+        else:
+            probs = torch.softmax(logits.to(device=device, dtype=dtype), dim=0).tolist()
+            replacement_score = sum(
+                p * _per_class_score(c) for c, p in enumerate(probs)
+            )
 
     diagnostics = {
         'sink_mode': sink_mode,

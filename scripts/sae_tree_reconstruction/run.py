@@ -48,7 +48,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from datasets.random_hierarchy_model import sample_trees
 from scripts.common.sae_loading import load_sae, load_transformer
-from scripts.sae_eval.streaming import dedupe_trees, select_activation_tokens
+from scripts.sae_eval.streaming import dedupe_trees, select_activation_tokens, _hook_module
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +399,7 @@ def stream_reconstruction(
             def _hook(_m, _i, o):
                 buf.append(o.detach())
             return _hook
-        handles.append(model.blocks[k].register_forward_hook(_make_hook(bufs[k])))
+        handles.append(_hook_module(model, k, st.mode).register_forward_hook(_make_hook(bufs[k])))
 
     # Move cond_full to device once (these are big-ish but we need them per batch).
     cond_dev: dict = {key: t.to(device) for key, t in cond_full.items()}

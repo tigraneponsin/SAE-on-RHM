@@ -35,15 +35,30 @@ def _select_tokens(act, activation_source, is_cls_model, token_idx):
       - 'cls_token': T'=1, the [CLS] position
       - 'one_token': T'=1, a single real-token position (offset by 1 for CLS models)
       - 'all_tokens': all real tokens (skipping [CLS] for CLS models)
+      - 'mean_pooled': T'=1, mean over the sequence dim. The caller is expected
+                      to hook `model.ln_f` so `act` is already post-ln_f.
     """
     if activation_source == 'cls_token':
         return act[:, :1, :]
     elif activation_source == 'one_token':
         offset = 1 if is_cls_model else 0
         return act[:, offset + token_idx : offset + token_idx + 1, :]
+    elif activation_source == 'mean_pooled':
+        return act.mean(dim=1, keepdim=True)
     elif is_cls_model:
         return act[:, 1:, :]
     return act
+
+
+def _hook_module(model, layer_id, activation_source):
+    """Return the module to attach the activation-capture hook to.
+
+    For 'mean_pooled', hook the final LayerNorm so the captured tensor is
+    post-ln_f. For all other modes, hook the requested block (pre-ln_f).
+    """
+    if activation_source == 'mean_pooled':
+        return model.ln_f
+    return model.blocks[layer_id]
 
 
 def _compute_activation_scale(model, train_loader, layer_id, activation_source,
@@ -55,7 +70,7 @@ def _compute_activation_scale(model, train_loader, layer_id, activation_source,
     Returns the scale factor (float). Prints the pre-scaling mean norm.
     """
     buf = []
-    hook = model.blocks[layer_id].register_forward_hook(
+    hook = _hook_module(model, layer_id, activation_source).register_forward_hook(
         lambda _m, _i, o: buf.append(o.detach())
     )
     sum_norm = 0.0
@@ -114,7 +129,7 @@ def _collect_eval_loss(sae, model, eval_loader, layer_id, activation_source,
     """Average SAE loss over the full eval_loader at the current SAE weights.
     Returns (total, recon, sparse) averaged across all eval tokens."""
     buf = []
-    hook = model.blocks[layer_id].register_forward_hook(
+    hook = _hook_module(model, layer_id, activation_source).register_forward_hook(
         lambda _m, _i, o: buf.append(o.detach())
     )
     sum_total = sum_recon = sum_sparse = 0.0
@@ -172,15 +187,28 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
     )
     log_steps_set.add(config.sae_steps)
     activation_source = str(config.sae_activation_source).lower()
-    assert activation_source in {'all_tokens', 'cls_token', 'one_token'}, (
+    assert activation_source in {'all_tokens', 'cls_token', 'one_token', 'mean_pooled'}, (
         f"sae_activation_source={config.sae_activation_source} is invalid. "
-        "Use one of: all_tokens, cls_token, one_token"
+        "Use one of: all_tokens, cls_token, one_token, mean_pooled"
     )
     if config.model in {'transformer_meanclass', 'transformer_meanclass_nores'} and activation_source == 'cls_token':
         raise ValueError(
             f'{config.model} has no [CLS] token. '
             'Use sae_activation_source=all_tokens or one_token.'
         )
+    if activation_source == 'mean_pooled':
+        if config.model not in {'transformer_meanclass', 'transformer_meanclass_nores'}:
+            raise ValueError(
+                f'sae_activation_source=mean_pooled requires a meanclass transformer, '
+                f'but config.model={config.model}.'
+            )
+        last_layer = int(model.num_layers) - 1
+        if layer_ids != [last_layer]:
+            print(
+                f'NOTE: mean_pooled mode ignores sae_layer={layer_ids}; '
+                f'forcing layer_ids=[{last_layer}] (the last block).'
+            )
+            layer_ids = [last_layer]
 
     token_idx = int(getattr(config, 'sae_token_idx', 0))
     if activation_source == 'one_token':
@@ -219,7 +247,7 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
         optimizer = optim.AdamW(sae.parameters(), lr=config.sae_lr, weight_decay=0.0)
 
         activation_buffer = []
-        hook = model.blocks[layer_id].register_forward_hook(
+        hook = _hook_module(model, layer_id, activation_source).register_forward_hook(
             lambda _m, _i, o: activation_buffer.append(o.detach())
         )
 
@@ -631,7 +659,7 @@ if __name__ == '__main__':
     parser.add_argument('--sae_steps', type=int, default=None, help='number of optimization steps for each SAE')
     parser.add_argument('--sae_batch_limit', type=int, default=None, help='max tokens per SAE step (0 uses all tokens in batch)')
     parser.add_argument('--sae_sample_batch_size', type=int, default=None, help='number of RHM samples per forward pass used to gather SAE activations')
-    parser.add_argument('--sae_activation_source', type=str, default=None, help='which positions feed SAE: all_tokens, cls_token (transformer_class only), or one_token')
+    parser.add_argument('--sae_activation_source', type=str, default=None, help='which positions feed SAE: all_tokens, cls_token (transformer_class only), one_token, or mean_pooled (meanclass models only; ln_f then mean over seq dim, last layer)')
     parser.add_argument('--sae_token_idx', type=int, default=None, help='0-based index of the real token to use when sae_activation_source=one_token (counts from 0 among sequence tokens, i.e. skips [CLS] for transformer_class)')
     parser.add_argument('--sae_log_points', type=int, default=None, help='number of log-spaced checkpoints to record during SAE training (default: 50)')
     parser.add_argument('--sae_train_size', type=int, default=None, help='number of RHM samples used to train SAE')

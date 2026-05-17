@@ -229,6 +229,16 @@ def main():
                 f'SAE checkpoint at position {k} reports layer_id={rec["layer_id"]}; '
                 f'expected {k}. Pass --sae_ckpts in bottom-to-top order.'
             )
+        # Treat missing model_variant (old checkpoints) as 'last' to match load_sae's default.
+        sae_variant = rec.get('model_variant') or 'last'
+        if sae_variant != args.model_variant:
+            raise RuntimeError(
+                f'Model-variant mismatch at SAE layer {k}: SAE was trained on '
+                f'transformer variant {sae_variant!r}, but --model_variant is '
+                f'{args.model_variant!r}. Feeding OOD activations to the SAE '
+                f'inflates active-feature counts and reconstruction error. '
+                f'Rerun with --model_variant {sae_variant}.'
+            )
         sae_records.append(rec)
 
     # ---- 3. Load eval artifacts ----

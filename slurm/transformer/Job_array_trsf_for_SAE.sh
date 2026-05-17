@@ -51,11 +51,11 @@
 # done
 
 V=16
-L=5
-M=4
+L=3
+M=16
 BATCH_SIZE=128
 wd=0.0001
-for P in 128000; do
+for P in 512000; do
     sbatch slurm/transformer/Sbatch_trsf_for_SAE.sh "$P" "$V" "$L" "$M" "$BATCH_SIZE" "" "" "" "" "" "" "" "$wd"
  done
 
