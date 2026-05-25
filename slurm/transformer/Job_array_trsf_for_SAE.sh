@@ -52,10 +52,22 @@
 
 V=16
 L=3
-M=16
-BATCH_SIZE=128
+M=4
+BATCH_SIZE=32
+lr=0.001
+DROPOUT=0
 wd=0.0001
-for P in 512000; do
-    sbatch slurm/transformer/Sbatch_trsf_for_SAE.sh "$P" "$V" "$L" "$M" "$BATCH_SIZE" "" "" "" "" "" "" "" "$wd"
+for P in 32768; do
+    sbatch slurm/transformer/Sbatch_trsf_for_SAE.sh "$P" "$V" "$L" "$M" "$BATCH_SIZE" "" "" "$lr" "" "" "$DROPOUT" "" "$wd"
  done
 
+# v=16
+# L=5
+# m=4
+# batch_size=256
+# lr=0.001
+# DROPOUT=0
+# wd=0.0001
+# for P in 256000; do
+#     sbatch slurm/transformer/Sbatch_trsf_for_SAE.sh "$P" "$v" "$L" "$m" "$batch_size" "" "" "$lr" "" "" "$DROPOUT" "" "$wd"
+# done

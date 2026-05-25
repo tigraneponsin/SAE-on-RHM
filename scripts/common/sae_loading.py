@@ -141,7 +141,14 @@ def load_transformer(train_output_path: str, eval_size: int, eval_seed: int,
             dataset, batch_size=data_cfg.batch_size, shuffle=False, num_workers=0
         )
 
+    # SAE eval relies on forward hooks; torch.compile bakes graph guards that
+    # can silently skip hooks installed after the first compiled call.
+    cfg.disable_compile = True
     model = init.init_model(cfg)
+    # Checkpoints from compile-wrapped models prefix keys with '_orig_mod.';
+    # strip it for the uncompiled model.
+    if state and all(k.startswith('_orig_mod.') for k in state.keys()):
+        state = {k[len('_orig_mod.'):]: v for k, v in state.items()}
     model.load_state_dict(state)
     model = model.to(device).eval()
     for p in model.parameters():

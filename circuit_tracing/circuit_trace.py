@@ -182,14 +182,48 @@ def main():
                  'has been replaced by indirect-influence pruning.'),
     )
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
-    p.add_argument('--model_variant', default='best', choices=['best', 'last'])
+    p.add_argument('--model_variant', default=None, choices=['best', 'last'],
+                   help='Transformer weights to load. If unset, auto-detect from '
+                        'SAE checkpoints (all SAEs must agree). If set, must '
+                        'match the variant the SAEs were trained on.')
     args = p.parse_args()
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ---- 1. Load transformer ----
-    print(f'Loading transformer from {args.train_output} (model_variant={args.model_variant})')
+    # ---- 0. Resolve model_variant from SAE checkpoints ----
+    # The transformer MUST be loaded with the same variant the SAEs were
+    # trained on; feeding OOD activations to the SAE inflates active-feature
+    # counts and reconstruction error. Peek each SAE checkpoint without
+    # instantiating the model (input_dim unknown until the transformer is
+    # loaded). All SAEs must agree.
+    sae_variants = []
+    for path in args.sae_ckpts:
+        peek = load_sae(path, input_dim=None, device='cpu', load_model=False)
+        if peek is None:
+            raise RuntimeError(f'Could not load SAE checkpoint at {path}')
+        sae_variants.append(peek.get('model_variant') or 'last')
+    unique_variants = sorted(set(sae_variants))
+    if len(unique_variants) > 1:
+        details = ', '.join(f'{p}: {v!r}' for p, v in zip(args.sae_ckpts, sae_variants))
+        raise RuntimeError(
+            f'SAE checkpoints disagree on transformer model_variant ({details}). '
+            f'All SAEs must be trained on the same transformer variant.'
+        )
+    sae_variant = unique_variants[0]
+    if args.model_variant is None:
+        print(f'Auto-detected model_variant={sae_variant!r} from SAE checkpoints.')
+    elif args.model_variant != sae_variant:
+        raise RuntimeError(
+            f'Model-variant mismatch: SAEs were trained on transformer variant '
+            f'{sae_variant!r}, but --model_variant is {args.model_variant!r}. '
+            f'Rerun with --model_variant {sae_variant}, or omit --model_variant '
+            f'to auto-detect.'
+        )
+    args.model_variant = sae_variant
+
+    # ---- 1. Load transformer (using the variant the SAEs were trained on) ----
+    print(f'Loading transformer from {args.train_output} (model_variant={sae_variant})')
     model, _loader, cfg, rules, rules_source = load_transformer(
         train_output_path=args.train_output,
         eval_size=args.eval_size,
@@ -197,7 +231,7 @@ def main():
         batch_size=args.eval_size,
         device=args.device,
         shuffle=False,
-        model_variant=args.model_variant,
+        model_variant=sae_variant,
     )
     print(f'  cfg.model = {cfg.model}, num_layers = {cfg.num_layers}, '
           f's = {cfg.tuple_size}, L = {cfg.num_layers}, v = {cfg.num_features}, '

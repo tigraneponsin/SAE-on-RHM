@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import csv
 import math
 from collections import defaultdict
 from pathlib import Path
@@ -82,7 +83,95 @@ def _build_matrix(entries_sorted, key, num_positions):
     return mat
 
 
-def _plot_layer(layer, entries, outfile, xlim):
+def _find_threshold_lambda(csv_path, layer, mode, tolerance):
+    """Smallest lambda_l1 for which norm_err - baseline_err exceeds tolerance.
+
+    Reads sweep_metrics.csv, filters rows matching (layer, mode), and returns
+    the threshold lambda or None if no row crosses it (or the csv is missing /
+    malformed).
+    """
+    csv_path = Path(csv_path)
+    if not csv_path.is_file():
+        print(f'  threshold: csv not found at {csv_path}, skipping line')
+        return None
+    rows = []
+    try:
+        with open(csv_path, newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if int(row['layer']) != int(layer):
+                    continue
+                if mode and row.get('mode', '') and row['mode'] != mode:
+                    continue
+                try:
+                    lam = float(row['lambda_l1'])
+                    ne = float(row['norm_err'])
+                    be = float(row['baseline_err'])
+                except (KeyError, ValueError):
+                    continue
+                rows.append((lam, ne, be))
+    except Exception as ex:
+        print(f'  threshold: failed to read {csv_path}: {ex}')
+        return None
+    if not rows:
+        print(f'  threshold: no rows for layer={layer} mode={mode} in {csv_path.name}')
+        return None
+    rows.sort(key=lambda r: r[0])
+    for lam, ne, be in rows:
+        if (ne - be) > tolerance:
+            print(f'  threshold (layer={layer} mode={mode}): lambda_l1={lam:g} '
+                  f'(norm_err={ne:.4g}, baseline_err={be:.4g}, '
+                  f'tolerance={tolerance})')
+            return lam
+    print(f'  threshold: norm_err never exceeds baseline + {tolerance} for '
+          f'layer={layer} mode={mode}')
+    return None
+
+
+def _plot_meanpool_layer(layer, entries, outfile, xlim, threshold_lambda, tolerance):
+    """Single-panel plot for mean_pooled artifacts.
+
+    Mean_pooled SAEs have one entropy value per artifact (P=1), already
+    conditioned on the root class. No per-position grid is meaningful.
+    """
+    entries = sorted(entries, key=lambda e: e['lambda_l1'])
+    lambdas = np.array([e['lambda_l1'] for e in entries], dtype=np.float64)
+    s = entries[0]['s']
+    L = entries[0]['L']
+
+    fig, ax = plt.subplots(1, 1, figsize=(6, 4.5))
+    for key, label, color in zip(ENTROPY_KEYS, ENTROPY_LABELS, ENTROPY_COLORS):
+        short = key.replace('H_bar_', '').replace('_norm', '')
+        y = np.array([float(e[f'H_{short}'][0]) for e in entries], dtype=np.float64)
+        ax.plot(lambdas, y, '-o', color=color, label=label,
+                markersize=4, linewidth=1.2)
+    ax.set_xscale('log')
+    ax.set_ylim(-0.05, 1.05)
+    ax.set_xlabel('lambda_l1', fontsize=10)
+    ax.set_ylabel('H / H_theoretical (root class)', fontsize=10)
+    ax.grid(True, which='both', linestyle='--', linewidth=0.3, alpha=0.5)
+    if xlim is not None:
+        ax.set_xlim(xlim[0], xlim[1])
+    if threshold_lambda is not None:
+        ax.axvline(threshold_lambda, color='red', linestyle='--', linewidth=1.0,
+                   alpha=0.7,
+                   label=f'err thresh ({tolerance:.0%}): {threshold_lambda:.3g}')
+    ax.legend(fontsize=10)
+    fig.suptitle(
+        f'Normalized entropy vs lambda_1 | layer {layer} | '
+        f'mode=mean_pooled | s={s}, L={L}',
+        fontsize=11, y=0.99,
+    )
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    print(f'  layer {layer} (mean_pooled): {len(entries)} artifacts, '
+          f'lambda range [{lambdas.min():.3g}, {lambdas.max():.3g}] '
+          f'-> {outfile}')
+
+
+def _plot_layer(layer, entries, outfile, xlim, threshold_lambda, tolerance):
     s_vals = {e['s'] for e in entries}
     L_vals = {e['L'] for e in entries}
     if len(s_vals) > 1 or len(L_vals) > 1:
@@ -124,6 +213,9 @@ def _plot_layer(layer, entries, outfile, xlim):
         ax.grid(True, which='both', linestyle='--', linewidth=0.3, alpha=0.5)
         if xlim is not None:
             ax.set_xlim(xlim[0], xlim[1])
+        if threshold_lambda is not None:
+            ax.axvline(threshold_lambda, color='red', linestyle='--',
+                       linewidth=0.8, alpha=0.7)
 
     ax_agg = axes_flat[num_positions]
     for key, label, color in zip(ENTROPY_KEYS, ENTROPY_LABELS, ENTROPY_COLORS):
@@ -137,6 +229,10 @@ def _plot_layer(layer, entries, outfile, xlim):
     ax_agg.grid(True, which='both', linestyle='--', linewidth=0.3, alpha=0.5)
     if xlim is not None:
         ax_agg.set_xlim(xlim[0], xlim[1])
+    if threshold_lambda is not None:
+        ax_agg.axvline(threshold_lambda, color='red', linestyle='--',
+                       linewidth=1.0, alpha=0.8,
+                       label=f'err thresh ({tolerance:.0%}): {threshold_lambda:.3g}')
 
     for j in range(num_positions + 1, len(axes_flat)):
         axes_flat[j].axis('off')
@@ -182,6 +278,13 @@ def main():
     parser.add_argument('--xlim', type=float, nargs=2, default=None,
                         metavar=('XMIN', 'XMAX'),
                         help='Optional log-x axis limits shared across subplots.')
+    parser.add_argument('--csv_path', default=None,
+                        help='Path to sweep_metrics.csv used to locate the '
+                             'error-onset threshold lambda. Default: '
+                             '<artifacts_dir>/sweep_metrics.csv.')
+    parser.add_argument('--err_tolerance', type=float, default=0.02,
+                        help='Additive tolerance on (norm_err - baseline_err) '
+                             'used to define the threshold lambda. Default: 0.02.')
     args = parser.parse_args()
 
     artifacts_dir = Path(args.artifacts_dir)
@@ -198,16 +301,38 @@ def main():
             'with --with-entropy (or --with-all).'
         )
 
+    modes = {e['mode'] for e in entries}
+    if 'mean_pooled' in modes and len(modes) > 1:
+        raise SystemExit(
+            f'Mixed activation modes in {artifacts_dir}: {sorted(modes)}. '
+            'mean_pooled artifacts must be plotted separately; re-run on a '
+            'directory containing a single mode.'
+        )
+    is_meanpool = (modes == {'mean_pooled'})
+
     by_layer = defaultdict(list)
     for e in entries:
         by_layer[e['layer_id']].append(e)
 
     prefix = args.outfile_prefix or str(artifacts_dir / 'entropy_lambda')
+    csv_path = args.csv_path or str(artifacts_dir / 'sweep_metrics.csv')
 
     print(f'Loaded {len(entries)} artifacts across {len(by_layer)} layer(s).')
     for layer in sorted(by_layer):
-        outfile = f'{prefix}_layer{layer}.png'
-        _plot_layer(layer, by_layer[layer], outfile, args.xlim)
+        layer_entries = by_layer[layer]
+        modes_here = sorted({e['mode'] for e in layer_entries if e['mode']})
+        mode_for_csv = modes_here[0] if len(modes_here) == 1 else ''
+        threshold_lambda = _find_threshold_lambda(
+            csv_path, layer, mode_for_csv, args.err_tolerance,
+        )
+        if is_meanpool:
+            outfile = f'{prefix}_layer{layer}_meanpool.png'
+            _plot_meanpool_layer(layer, layer_entries, outfile, args.xlim,
+                                 threshold_lambda, args.err_tolerance)
+        else:
+            outfile = f'{prefix}_layer{layer}.png'
+            _plot_layer(layer, layer_entries, outfile, args.xlim,
+                        threshold_lambda, args.err_tolerance)
 
 
 if __name__ == '__main__':

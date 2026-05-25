@@ -37,7 +37,7 @@
 #   --node_threshold F    [0.8]     indirect-influence node-prune threshold
 #   --edge_threshold F    [0.98]    indirect-influence edge-prune threshold
 #   --device cuda|cpu     [cuda]
-#   --model_variant best|last [best]
+#   --model_variant best|last [auto]   auto-detected from SAE checkpoints if unset
 #
 # Example (3-layer transformer):
 #   sbatch slurm/sae/run_circuit_trace.sh \
@@ -84,7 +84,9 @@ SINK_MODE=softmax_logits
 NODE_THRESHOLD=0.8
 EDGE_THRESHOLD=0.98
 DEVICE=cuda
-MODEL_VARIANT=best
+# Empty = let circuit_trace.py auto-detect from the SAE checkpoints
+# (must agree across layers). Override with --model_variant best|last.
+MODEL_VARIANT=""
 SAE_CKPTS=()
 EVAL_ARTS=()
 
@@ -117,7 +119,10 @@ Optional:
   --node_threshold  default 0.8              (indirect-influence node prune)
   --edge_threshold  default 0.98             (indirect-influence edge prune)
   --device          default cuda
-  --model_variant   default best             (one of {best, last})
+  --model_variant   default auto             (one of {best, last}; if unset,
+                                              circuit_trace.py auto-detects from
+                                              the SAE checkpoints, which must
+                                              all agree on the variant.)
 
 --sae_ckpts and --sae_eval_artifacts each take one or more paths; pass each
 list terminated by either the next flag or end-of-line. They must be the same
@@ -233,7 +238,7 @@ echo "SINK_MODE:     ${SINK_MODE}"
 echo "NODE_THRESHOLD:${NODE_THRESHOLD}"
 echo "EDGE_THRESHOLD:${EDGE_THRESHOLD}"
 echo "DEVICE:        ${DEVICE}"
-echo "MODEL_VARIANT: ${MODEL_VARIANT}"
+echo "MODEL_VARIANT: ${MODEL_VARIANT:-auto (detect from SAE checkpoints)}"
 echo "----------------------------------------------------------------------"
 echo "SAE checkpoints (${#SAE_CKPTS[@]}, layer 0 first):"
 for f in "${SAE_CKPTS[@]}"; do echo "  ${f}"; done
@@ -244,6 +249,13 @@ echo "======================================================================"
 START_EPOCH=$(date +%s)
 START_HUMAN=$(date '+%Y-%m-%d %H:%M:%S %Z')
 echo "START:         ${START_HUMAN}"
+
+# Pass --model_variant only when the user set it explicitly; otherwise let
+# circuit_trace.py auto-detect from the SAE checkpoints.
+EXTRA_ARGS=()
+if [[ -n "${MODEL_VARIANT}" ]]; then
+    EXTRA_ARGS+=(--model_variant "${MODEL_VARIANT}")
+fi
 
 set +e
 srun python -m circuit_tracing.circuit_trace \
@@ -259,7 +271,7 @@ srun python -m circuit_tracing.circuit_trace \
     --node_threshold "${NODE_THRESHOLD}" \
     --edge_threshold "${EDGE_THRESHOLD}" \
     --device "${DEVICE}" \
-    --model_variant "${MODEL_VARIANT}"
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 EXIT_CODE=$?
 set -e
 

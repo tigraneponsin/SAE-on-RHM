@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /tmp/entropy_lambda_test_layer0.png)",
+      "Read(//tmp/**)",
+      "Bash(sort -t_ -k3 -n)"
+    ]
+  }
+}
