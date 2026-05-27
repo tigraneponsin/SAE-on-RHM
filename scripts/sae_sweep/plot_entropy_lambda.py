@@ -282,9 +282,9 @@ def main():
                         help='Path to sweep_metrics.csv used to locate the '
                              'error-onset threshold lambda. Default: '
                              '<artifacts_dir>/sweep_metrics.csv.')
-    parser.add_argument('--err_tolerance', type=float, default=0.02,
+    parser.add_argument('--err_tolerance', type=float, default=0.01,
                         help='Additive tolerance on (norm_err - baseline_err) '
-                             'used to define the threshold lambda. Default: 0.02.')
+                             'used to define the threshold lambda. Default: 0.01.')
     args = parser.parse_args()
 
     artifacts_dir = Path(args.artifacts_dir)

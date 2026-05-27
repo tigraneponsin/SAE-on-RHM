@@ -43,15 +43,21 @@ from circuit_tracing.linearize import (
     capture_anchors, linearized_full_forward, _unwrap_compiled,
 )
 from circuit_tracing.attribution import (
-    sae_forward, edges_layer_to_layer,
+    sae_forward, sae_forward_pooled, edges_layer_to_layer,
+    edges_layer_to_pooled,
     edges_embedding_to_layer0,
     edges_final_layer_to_logits_per_class,
+    edges_pooled_final_to_logits_per_class,
 )
 from circuit_tracing.labels import build_labels_per_layer
 from circuit_tracing.dag import (
     assemble_edges, build_node_table, to_networkx,
 )
 from circuit_tracing.prune import prune_indirect_influence
+from circuit_tracing.fidelity import (
+    compute_pre_prune_fidelity, compute_postprune_alignment,
+)
+from circuit_tracing.grouping import group_by_signature
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +156,8 @@ class _RemovedFlag(argparse.Action):
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """argparse for the single-config CLI. Sweep CLI shares most flags."""
     p = argparse.ArgumentParser()
     p.add_argument('--train_output', required=True,
                    help='Path to transformer checkpoint (with output.model and output.rules).')
@@ -186,10 +193,29 @@ def main():
                    help='Transformer weights to load. If unset, auto-detect from '
                         'SAE checkpoints (all SAEs must agree). If set, must '
                         'match the variant the SAEs were trained on.')
-    args = p.parse_args()
+    p.add_argument('--pooled_last_layer', action='store_true', default=False,
+                   help='Treat the last-layer SAE as a single mean-pooled SAE '
+                        '(post-ln_f pooled [d] space) instead of per-position. '
+                        'Auto-detected from the last SAE\'s sae_activation_source '
+                        '== mean_pooled; this flag forces it on and is validated '
+                        'against the SAEs.')
+    return p
 
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+
+def prepare_pipeline(args) -> dict:
+    """Run the threshold-independent stages of the tracer.
+
+    Loads the transformer + SAEs + eval artifacts, captures anchors, runs
+    SAE forwards and the bit-identity check, computes all attribution
+    edges, builds labels, the node table, the full edge list, and the
+    pre-prune fidelity dict. Returns a dict consumed by
+    `finalize_one_config`. Safe to call once and re-use across many
+    (node_threshold, edge_threshold) cells.
+
+    `args` is the parsed `argparse.Namespace`; the only field consumed
+    by per-cell pruning is `args.sink_mode`, which is still captured
+    here so it can be threaded through.
+    """
 
     # ---- 0. Resolve model_variant from SAE checkpoints ----
     # The transformer MUST be loaded with the same variant the SAEs were
@@ -275,6 +301,40 @@ def main():
             )
         sae_records.append(rec)
 
+    # ---- 2b. Resolve pooled-last-layer mode (flag OR auto-detect) ----
+    # A mean_pooled last-layer SAE lives in post-ln_f pooled [d] space. Detect
+    # it from the SAE's recorded sae_activation_source and reconcile with the
+    # explicit --pooled_last_layer flag.
+    sae_sources = [rec.get('sae_activation_source', 'all_tokens') for rec in sae_records]
+    detected_pooled = (sae_sources[K - 1] == 'mean_pooled')
+    requested_pooled = bool(getattr(args, 'pooled_last_layer', False))
+    pooled_last_layer = requested_pooled or detected_pooled
+    if pooled_last_layer:
+        if sae_sources[K - 1] != 'mean_pooled':
+            raise RuntimeError(
+                f'--pooled_last_layer was requested but the last SAE (layer '
+                f'{K - 1}) has sae_activation_source={sae_sources[K - 1]!r}, not '
+                f"'mean_pooled'. Train the last-layer SAE with "
+                f'sae_activation_source=mean_pooled.'
+            )
+        bad = [k for k in range(K - 1) if sae_sources[k] == 'mean_pooled']
+        if bad:
+            raise RuntimeError(
+                f'pooled_last_layer mode requires layers 0..K-2 to be '
+                f'per-position SAEs, but layers {bad} have '
+                f'sae_activation_source=mean_pooled.'
+            )
+        if requested_pooled and not detected_pooled:
+            # Should be unreachable given the check above, kept for clarity.
+            pass
+        print(f'Pooled-last-layer mode ON (last SAE source = '
+              f'{sae_sources[K - 1]!r}; '
+              f'{"flag" if requested_pooled else "auto-detected"}).')
+    elif detected_pooled:
+        # Unreachable: detected_pooled implies pooled_last_layer True.
+        pass
+    args.pooled_last_layer = pooled_last_layer
+
     # ---- 3. Load eval artifacts ----
     if len(args.sae_eval_artifacts) != K:
         raise RuntimeError(
@@ -288,6 +348,15 @@ def main():
                 f'Eval artifact at position {k} has layer_id={art.get("layer_id")}; '
                 f'expected {k}.'
             )
+        if pooled_last_layer and k == K - 1:
+            fc = art.get('firing_count')
+            if fc is None or int(fc.shape[0]) != 1:
+                raise RuntimeError(
+                    f'pooled_last_layer mode expects the last eval artifact to '
+                    f'have firing_count [1, F] (single pooled position), got '
+                    f'shape {None if fc is None else tuple(fc.shape)}. Re-run the '
+                    f'eval on the mean_pooled SAE.'
+                )
         rhm_art = art.get('rhm', {})
         if int(rhm_art.get('s', -1)) != s or int(rhm_art.get('L', -1)) != L:
             raise RuntimeError(
@@ -321,8 +390,12 @@ def main():
     print('Anchor capture and sanity check OK.')
 
     # ---- 7. SAE forwards + error nodes ----
+    # Per-position layers run on the post-block residual stream. In pooled
+    # mode the last layer (K-1) instead runs on anchors.pooled (post-ln_f
+    # mean-pooled [d]) and stores a single pooled node (z [1, F]).
     z_list, x_hat_list, e_list = [], [], []
-    for k in range(K):
+    n_perpos = K - 1 if pooled_last_layer else K
+    for k in range(n_perpos):
         x_k = anchors.blocks[k].r_out
         z, x_hat, e = sae_forward(x_k, sae_records[k]['sae'], sae_records[k]['act_scale'])
         recon_err = (x_hat + e - x_k).abs().max().item()
@@ -336,9 +409,34 @@ def main():
         print(f'  Layer {k}: z active = {(z > 0).sum().item()} / {z.numel()}, '
               f'||e|| = {e.norm().item():.3f}, ||x|| = {x_k.norm().item():.3f}')
 
+    if pooled_last_layer:
+        pooled_vec = anchors.pooled  # [d] post-ln_f mean-pooled
+        z_p, x_hat_p, e_p = sae_forward_pooled(
+            pooled_vec, sae_records[K - 1]['sae'], sae_records[K - 1]['act_scale'],
+        )
+        recon_err = (x_hat_p + e_p - pooled_vec).abs().max().item()
+        if recon_err > 5e-4:
+            raise RuntimeError(
+                f'Pooled SAE bit-identity FAILED at layer {K - 1}: '
+                f'max abs err = {recon_err}'
+            )
+        z_list.append(z_p)        # [1, F]
+        x_hat_list.append(x_hat_p)  # [d]
+        e_list.append(e_p)          # [d]
+        print(f'  Layer {K - 1} (pooled): z active = {(z_p > 0).sum().item()} / '
+              f'{z_p.numel()}, ||e|| = {e_p.norm().item():.3f}, '
+              f'||pooled|| = {pooled_vec.norm().item():.3f}')
+
     # ---- 8. Whole-pipeline bit-identity ----
-    spliced = [x_hat_list[k] + e_list[k] for k in range(K)]
-    spliced_logits = linearized_full_forward(model, anchors, spliced)
+    if pooled_last_layer:
+        spliced = [x_hat_list[k] + e_list[k] for k in range(K - 1)]
+        pooled_out = x_hat_list[K - 1] + e_list[K - 1]  # [d]
+        spliced_logits = linearized_full_forward(
+            model, anchors, spliced, pooled_out=pooled_out,
+        )
+    else:
+        spliced = [x_hat_list[k] + e_list[k] for k in range(K)]
+        spliced_logits = linearized_full_forward(model, anchors, spliced)
     bit_identity_err = (spliced_logits - anchors.logits).abs().max().item()
     print(f'Bit-identity check: max logit err = {bit_identity_err:.3e}')
     if bit_identity_err > 1e-3:
@@ -347,9 +445,12 @@ def main():
         )
 
     # ---- 9. Layer-to-layer attribution ----
+    # Per-position pairs k -> k+1 for k in 0..(last_perpos_pair-1). In pooled
+    # mode the final pair (K-2 -> pooled K-1) uses edges_layer_to_pooled.
     layer_pairs_feat = []
     layer_pairs_err = []
-    for k in range(K - 1):
+    n_perpos_pairs = K - 2 if pooled_last_layer else K - 1
+    for k in range(n_perpos_pairs):
         sae_k = sae_records[k]['sae']
         sae_kp1 = sae_records[k + 1]['sae']
         feats, errs = edges_layer_to_layer(
@@ -364,6 +465,21 @@ def main():
         layer_pairs_err.append(errs)
         print(f'  edges k={k} -> k+1: {len(feats)} feat-feat, {len(errs)} err-feat')
 
+    if pooled_last_layer:
+        sae_km2 = sae_records[K - 2]['sae']
+        sae_pooled = sae_records[K - 1]['sae']
+        feats, errs = edges_layer_to_pooled(
+            model, anchors,
+            z_list[K - 2], e_list[K - 2],
+            sae_km2.decoder.weight, sae_records[K - 2]['act_scale'],
+            sae_pooled.encoder.weight, sae_records[K - 1]['act_scale'],
+            z_list[K - 1],
+        )
+        layer_pairs_feat.append(feats)
+        layer_pairs_err.append(errs)
+        print(f'  edges k={K - 2} -> pooled K-1: {len(feats)} feat-feat, '
+              f'{len(errs)} err-feat')
+
     # ---- 10. Embedding -> layer-0 attribution ----
     sae_0 = sae_records[0]['sae']
     embed_to_l0 = edges_embedding_to_layer0(
@@ -375,12 +491,22 @@ def main():
     print(f'  edges embed -> layer 0: {len(embed_to_l0)}')
 
     # ---- 11. Per-class final-layer attribution ----
-    feat_to_logit, err_to_logit = edges_final_layer_to_logits_per_class(
-        model, anchors,
-        z_list[K - 1], e_list[K - 1],
-        sae_records[K - 1]['sae'].decoder.weight, sae_records[K - 1]['act_scale'],
-        num_classes=num_classes,
-    )
+    if pooled_last_layer:
+        # Pooled feature/error already live in post-ln_f pooled space: no
+        # _lnf_pool_lin, no 1/N, single position 0.
+        feat_to_logit, err_to_logit = edges_pooled_final_to_logits_per_class(
+            model,
+            z_list[K - 1], e_list[K - 1],
+            sae_records[K - 1]['sae'].decoder.weight, sae_records[K - 1]['act_scale'],
+            num_classes=num_classes,
+        )
+    else:
+        feat_to_logit, err_to_logit = edges_final_layer_to_logits_per_class(
+            model, anchors,
+            z_list[K - 1], e_list[K - 1],
+            sae_records[K - 1]['sae'].decoder.weight, sae_records[K - 1]['act_scale'],
+            num_classes=num_classes,
+        )
     print(f'  Final-layer per-class edges: {len(feat_to_logit)} feat->logit, '
           f'{len(err_to_logit)} err->logit, {num_classes} classes')
 
@@ -392,6 +518,8 @@ def main():
         z_list, labels_per_layer, s=s, L=L,
         embed_anchor=anchors.embed, x_input=x_input,
         logits=anchors.logits, y_true=y_true,
+        v=int(cfg.num_features), n=int(cfg.num_classes),
+        pooled_last_layer=pooled_last_layer,
     )
     all_edges = assemble_edges(
         layer_pairs_feat, layer_pairs_err,
@@ -399,16 +527,88 @@ def main():
         feat_to_logit, err_to_logit, K=K,
     )
 
-    pruned_edges, kept_node_keys, prune_diag = prune_indirect_influence(
-        nodes, all_edges, K=K,
-        logits=anchors.logits, y_true=y_true,
+    # Pre-prune fidelity diagnostics (depend on attribution edges only).
+    pre_fid = compute_pre_prune_fidelity(
+        layer_pairs_feat=layer_pairs_feat,
+        layer_pairs_err=layer_pairs_err,
+        embed_to_l0=embed_to_l0,
+        feat_to_logit=feat_to_logit,
+        err_to_logit=err_to_logit,
+        logits=anchors.logits,
+        y_true=y_true,
+        num_classes=num_classes,
         sink_mode=args.sink_mode,
-        node_threshold=args.node_threshold,
-        edge_threshold=args.edge_threshold,
-        device=anchors.logits.device,
+        s=s, L=L, N=N,
+        pooled_last_layer=pooled_last_layer,
     )
-    print(f'Pruning ({args.sink_mode}, node_th={args.node_threshold}, '
-          f'edge_th={args.edge_threshold}):')
+
+    # Predicted / runner-up class (threshold-independent).
+    sorted_idx = torch.argsort(anchors.logits, descending=True)
+    y_pred = int(sorted_idx[0].item())
+    y_runner = int(sorted_idx[1].item()) if len(sorted_idx) > 1 else y_pred
+
+    # Per-input RHM tree row (level 0 = root scalar, level L = leaves of
+    # length s^L).
+    tree_row = {l: trees[l][args.input_idx].cpu() for l in range(L + 1)}
+
+    return {
+        'cfg': cfg,
+        'K': K, 's': s, 'L': L, 'N': N, 'num_classes': num_classes,
+        'nodes': nodes,
+        'all_edges': all_edges,
+        'logits': anchors.logits,
+        'y_true': y_true,
+        'y_pred': y_pred,
+        'y_runner': y_runner,
+        'bit_identity_max_err': bit_identity_err,
+        'pre_fid': pre_fid,
+        'sink_mode': args.sink_mode,
+        'input_idx': args.input_idx,
+        'eval_seed': args.eval_seed,
+        'tree_row': tree_row,
+        'pooled_last_layer': pooled_last_layer,
+    }
+
+
+def finalize_one_config(prepared: dict,
+                        node_threshold: float,
+                        edge_threshold: float,
+                        out_dir: Path) -> dict:
+    """Run the threshold-dependent stages and persist artifacts.
+
+    Pruning + post-prune alignment + signature grouping + on-disk save.
+    Returns a small cell-summary dict suitable for inclusion in
+    `sweep_summary.json`.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cfg = prepared['cfg']
+    K = prepared['K']; s = prepared['s']; L = prepared['L']; N = prepared['N']
+    num_classes = prepared['num_classes']
+    nodes = prepared['nodes']
+    all_edges = prepared['all_edges']
+    logits = prepared['logits']
+    y_true = prepared['y_true']
+    y_pred = prepared['y_pred']
+    y_runner = prepared['y_runner']
+    bit_identity_err = prepared['bit_identity_max_err']
+    pre_fid = prepared['pre_fid']
+    sink_mode = prepared['sink_mode']
+    tree_row = prepared['tree_row']
+    pooled_last_layer = prepared.get('pooled_last_layer', False)
+
+    # ---- Prune ----
+    pruned_edges, _kept_node_keys, prune_diag = prune_indirect_influence(
+        nodes, all_edges, K=K,
+        logits=logits, y_true=y_true,
+        sink_mode=sink_mode,
+        node_threshold=node_threshold,
+        edge_threshold=edge_threshold,
+        device=logits.device,
+    )
+    print(f'Pruning ({sink_mode}, node_th={node_threshold}, '
+          f'edge_th={edge_threshold}):')
     print(f'  edges: {prune_diag["n_edges_pre"]} pre -> {prune_diag["n_edges_post"]} post')
     print(f'  features: {prune_diag["n_features_pre"]} pre -> '
           f'{prune_diag["n_features_post"]} post')
@@ -417,95 +617,47 @@ def main():
     print(f'  completeness_score = {prune_diag["completeness_score"]:.3f}')
     print(f'  replacement_score  = {prune_diag["replacement_score"]:.3f}')
 
-    # ---- 14. Pre-prune fidelity diagnostics (kept from old pipeline) ----
-    # Per-layer error mass (using all attribution edges, not the pruned graph).
-    per_layer_err_fraction = []
-    for k in range(K - 1):
-        feat_abs = sum(abs(w) for (_, _, _, _, w) in layer_pairs_feat[k])
-        err_abs = sum(abs(w) for (_, _, _, w) in layer_pairs_err[k])
-        denom = feat_abs + err_abs
-        per_layer_err_fraction.append((err_abs / denom) if denom > 0 else 0.0)
-
-    # Feature-mediated logit fraction: per class, then averaged with the
-    # softmax weights (for softmax_logits mode) or evaluated at y_true (for
-    # true_class). Reported as a single scalar.
-    if args.sink_mode == 'true_class':
-        c_target = y_true
-        feat_abs_l = sum(abs(w) for (_, _, c, w) in feat_to_logit if c == c_target)
-        err_abs_l = sum(abs(w) for (_, c, w) in err_to_logit if c == c_target)
-        denom = feat_abs_l + err_abs_l
-        feat_mediated_frac = (feat_abs_l / denom) if denom > 0 else 0.0
-    else:
-        probs = torch.softmax(anchors.logits, dim=0).tolist()
-        weighted_num = 0.0
-        weighted_den = 0.0
-        for c in range(num_classes):
-            feat_abs_l = sum(abs(w) for (_, _, cc, w) in feat_to_logit if cc == c)
-            err_abs_l = sum(abs(w) for (_, cc, w) in err_to_logit if cc == c)
-            denom = feat_abs_l + err_abs_l
-            if denom > 0:
-                weighted_num += probs[c] * feat_abs_l
-                weighted_den += probs[c] * denom
-        feat_mediated_frac = (weighted_num / weighted_den) if weighted_den > 0 else 0.0
-
-    # Subtree alignment: feature->feature edges (existing) PLUS embed->layer0
-    # edges as a new "k=-1" slot. Per-layer plus a global non-degenerate
-    # average.
-    per_layer_subtree_alignment = []
-    nondeg_aligned = 0.0
-    nondeg_total = 0.0
-
-    # Embed -> layer 0: group = s (per design decision; matches s ** (2 + (-1))).
-    embed_aligned = 0.0
-    embed_total = 0.0
-    embed_group = s
-    for (p, j, q, w) in embed_to_l0:
-        embed_total += abs(w)
-        if (p // embed_group) == (q // embed_group):
-            embed_aligned += abs(w)
-    embed_frac = (embed_aligned / embed_total) if embed_total > 0 else 0.0
-    per_layer_subtree_alignment.append(embed_frac)
-    if embed_group < N:
-        nondeg_aligned += embed_aligned
-        nondeg_total += embed_total
-
-    for k, lst in enumerate(layer_pairs_feat):
-        group = s ** (2 + k)
-        aligned_k = 0.0
-        total_k = 0.0
-        for (i, p, j, q, w) in lst:
-            total_k += abs(w)
-            if (p // group) == (q // group):
-                aligned_k += abs(w)
-        frac_k = (aligned_k / total_k) if total_k > 0 else 0.0
-        per_layer_subtree_alignment.append(frac_k)
-        if group < N:
-            nondeg_aligned += aligned_k
-            nondeg_total += total_k
-    subtree_alignment_fraction = (
-        nondeg_aligned / nondeg_total if nondeg_total > 0 else 0.0
+    # ---- Post-prune alignment ----
+    post_fid = compute_postprune_alignment(
+        pruned_edges, s=s, L=L, N=N, pooled_last_layer=pooled_last_layer,
     )
+    subtree_alignment_fraction_postprune = post_fid[
+        'subtree_alignment_fraction_postprune'
+    ]
+    per_layer_subtree_alignment_postprune = post_fid[
+        'per_layer_subtree_alignment_postprune'
+    ]
 
-    # Predicted/runner-up class for stdout context (logit_diff dropped).
-    sorted_idx = torch.argsort(anchors.logits, descending=True)
-    y_pred = int(sorted_idx[0].item())
-    y_runner = int(sorted_idx[1].item()) if len(sorted_idx) > 1 else y_pred
+    # ---- Bottom-up signature grouping ----
+    grouped_nodes, grouped_edges, group_membership = group_by_signature(
+        nodes=nodes, pruned_edges=pruned_edges, K=K, s=s, L=L,
+        v=int(cfg.num_features), n=int(cfg.num_classes),
+    )
+    n_groups = sum(1 for k in grouped_nodes if k[0] == 'group')
+    n_multi_groups = sum(
+        1 for k, v_ in grouped_nodes.items()
+        if k[0] == 'group' and int(v_.get('n_constituents', 1)) > 1
+    )
+    print(f'Grouping (bottom-up by incoming signature):')
+    print(f'  {n_groups} group nodes total ({n_multi_groups} with >1 constituent)')
+    print(f'  {len(grouped_edges)} grouped edges')
 
     fidelity = {
         'bit_identity_max_err': bit_identity_err,
-        'per_layer_error_fraction': per_layer_err_fraction,
-        'feature_mediated_logit_fraction': feat_mediated_frac,
-        'subtree_alignment_fraction': subtree_alignment_fraction,
-        'per_layer_subtree_alignment': per_layer_subtree_alignment,  # [embed, k=0, k=1, ...]
+        'per_layer_error_fraction': pre_fid['per_layer_error_fraction'],
+        'feature_mediated_logit_fraction': pre_fid['feature_mediated_logit_fraction'],
+        'subtree_alignment_fraction': pre_fid['subtree_alignment_fraction'],
+        'per_layer_subtree_alignment': pre_fid['per_layer_subtree_alignment'],
+        'subtree_alignment_fraction_postprune': subtree_alignment_fraction_postprune,
+        'per_layer_subtree_alignment_postprune': per_layer_subtree_alignment_postprune,
         'y_true': y_true,
         'y_pred': y_pred,
         'y_runner_up': y_runner,
-        'logits': anchors.logits.cpu(),
+        'logits': logits.cpu(),
         'rhm': {'s': s, 'L': L, 'v': cfg.num_features,
                 'n': cfg.num_classes, 'm': cfg.num_synonyms},
-        'input_idx': args.input_idx,
-        'eval_seed': args.eval_seed,
-        # Pruning-related fidelity fields (per spec):
+        'input_idx': prepared['input_idx'],
+        'eval_seed': prepared['eval_seed'],
         'sink_mode': prune_diag['sink_mode'],
         'node_threshold': prune_diag['node_threshold'],
         'edge_threshold': prune_diag['edge_threshold'],
@@ -516,27 +668,38 @@ def main():
         'completeness_score': prune_diag['completeness_score'],
         'replacement_score': prune_diag['replacement_score'],
         'completeness_weight_convention': prune_diag['completeness_weight_convention'],
+        'n_grouped_nodes': n_groups,
+        'n_grouped_nodes_multi': n_multi_groups,
+        'n_grouped_edges': len(grouped_edges),
+        'pooled_last_layer': pooled_last_layer,
     }
 
     print('Fidelity:')
     print(f'  bit_identity_max_err              = {bit_identity_err:.3e}')
-    for k, frac in enumerate(per_layer_err_fraction):
+    for k, frac in enumerate(pre_fid['per_layer_error_fraction']):
         flag = '  <-- HIGH (>0.2)' if frac > 0.2 else ''
         print(f'  per_layer_error_fraction[k={k}-> k+1] = {frac:.3f}{flag}')
-    print(f'  feature_mediated_logit_fraction   = {feat_mediated_frac:.3f}')
-    align_labels = ['embed -> k=0'] + [f'k={k}-> k+1' for k in range(K - 1)]
-    for label, frac in zip(align_labels, per_layer_subtree_alignment):
-        print(f'  subtree_alignment[{label:13s}]    = {frac:.3f}')
-    print(f'  subtree_alignment_fraction        = {subtree_alignment_fraction:.3f}')
+    print(f'  feature_mediated_logit_fraction   = {pre_fid["feature_mediated_logit_fraction"]:.3f}')
+    # In pooled mode the final feat->feat slot is degenerate (dst pos == 0)
+    # and reported as None; print it as 'n/a (pooled)'.
+    def _fmt_frac(frac):
+        return 'n/a (pooled)' if frac is None else f'{frac:.3f}'
 
-    # ---- 15. Save artifacts ----
+    align_labels = ['embed -> k=0'] + [f'k={k}-> k+1' for k in range(K - 1)]
+    for label, frac in zip(align_labels, pre_fid['per_layer_subtree_alignment']):
+        print(f'  subtree_alignment[{label:13s}]      = {_fmt_frac(frac)}  (pre-prune)')
+    print(f'  subtree_alignment_fraction        = {pre_fid["subtree_alignment_fraction"]:.3f}  (pre-prune)')
+    for label, frac in zip(align_labels, per_layer_subtree_alignment_postprune):
+        print(f'  subtree_alignment_pp[{label:13s}]    = {_fmt_frac(frac)}  (post-prune)')
+    print(f'  subtree_alignment_fraction_pp     = {subtree_alignment_fraction_postprune:.3f}  (post-prune)')
+
+    # ---- Save artifacts ----
     torch.save(nodes, out_dir / 'nodes.pt')
     torch.save({'all': all_edges, 'pruned': pruned_edges}, out_dir / 'edges.pt')
     torch.save(fidelity, out_dir / 'fidelity.pt')
-
-    # Dump the actual RHM tree row for this input across all levels
-    # (level 0 = root scalar, level L = leaves of length s^L).
-    tree_row = {l: trees[l][args.input_idx].cpu() for l in range(L + 1)}
+    torch.save(grouped_nodes, out_dir / 'grouped_nodes.pt')
+    torch.save(grouped_edges, out_dir / 'grouped_edges.pt')
+    torch.save(group_membership, out_dir / 'group_membership.pt')
     torch.save(tree_row, out_dir / 'tree_for_input.pt')
 
     g = to_networkx(nodes, pruned_edges)
@@ -544,28 +707,59 @@ def main():
         pickle.dump(g, f)
 
     summary = {
-        'input_idx': args.input_idx,
+        'input_idx': prepared['input_idx'],
         'y_true': y_true, 'y_pred': y_pred, 'y_runner_up': y_runner,
         'bit_identity_max_err': bit_identity_err,
-        'per_layer_error_fraction': per_layer_err_fraction,
-        'feature_mediated_logit_fraction': feat_mediated_frac,
-        'subtree_alignment_fraction': subtree_alignment_fraction,
-        'per_layer_subtree_alignment': per_layer_subtree_alignment,
-        'sink_mode': args.sink_mode,
-        'node_threshold': args.node_threshold,
-        'edge_threshold': args.edge_threshold,
+        'per_layer_error_fraction': pre_fid['per_layer_error_fraction'],
+        'feature_mediated_logit_fraction': pre_fid['feature_mediated_logit_fraction'],
+        'subtree_alignment_fraction': pre_fid['subtree_alignment_fraction'],
+        'per_layer_subtree_alignment': pre_fid['per_layer_subtree_alignment'],
+        'subtree_alignment_fraction_postprune': subtree_alignment_fraction_postprune,
+        'per_layer_subtree_alignment_postprune': per_layer_subtree_alignment_postprune,
+        'sink_mode': sink_mode,
+        'node_threshold': float(node_threshold),
+        'edge_threshold': float(edge_threshold),
         'n_nodes_pre_by_kind': prune_diag['n_nodes_pre_by_kind'],
         'n_nodes_post_by_kind': prune_diag['n_nodes_post_by_kind'],
         'n_edges_pre_prune': prune_diag['n_edges_pre'],
         'n_edges_post_prune': prune_diag['n_edges_post'],
         'completeness_score': prune_diag['completeness_score'],
         'replacement_score': prune_diag['replacement_score'],
+        'n_grouped_nodes': n_groups,
+        'n_grouped_nodes_multi': n_multi_groups,
+        'n_grouped_edges': len(grouped_edges),
+        'pooled_last_layer': pooled_last_layer,
     }
     with open(out_dir / 'summary.json', 'w') as f:
         json.dump(summary, f, indent=2)
 
     print(f'\nSaved to {out_dir}/  (nodes.pt, edges.pt, fidelity.pt, '
+          f'grouped_nodes.pt, grouped_edges.pt, group_membership.pt, '
           f'graph.gpickle, summary.json)')
+
+    return {
+        'subdir': str(out_dir),
+        'node_threshold': float(node_threshold),
+        'edge_threshold': float(edge_threshold),
+        'n_features_post': int(prune_diag['n_features_post']),
+        'n_edges_post': int(prune_diag['n_edges_post']),
+        'n_groups': n_groups,
+        'n_groups_multi': n_multi_groups,
+        'completeness_score': float(prune_diag['completeness_score']),
+        'replacement_score': float(prune_diag['replacement_score']),
+        'subtree_alignment_fraction_postprune': float(subtree_alignment_fraction_postprune),
+    }
+
+
+def main():
+    args = build_parser().parse_args()
+    prepared = prepare_pipeline(args)
+    finalize_one_config(
+        prepared,
+        node_threshold=args.node_threshold,
+        edge_threshold=args.edge_threshold,
+        out_dir=Path(args.output_dir),
+    )
 
 
 if __name__ == '__main__':

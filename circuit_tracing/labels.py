@@ -37,18 +37,34 @@ def parent_level(k: int, L: int) -> int:
 
 
 def build_labels(eval_artifact: dict, layer_id: int, s: int, L: int) -> dict:
-    """Argmax-label table for one SAE eval artifact.
+    """Per-(p, f) label table for one SAE eval artifact.
 
     Returns:
-        dict[(p, f)] -> {'value': int, 'p_value_given_fire': float,
-                          'level': int, 'parent_position': int,
-                          'firing_count': int}
-        for every (p, f) where firing_count[p, f] > 0. Features that never
-        fired in the eval set are labeled with value=None.
+        dict[(p, f)] -> {
+            'value': int | None,
+            'p_value_given_fire': float,
+            'level': int,
+            'parent_position': int,
+            'firing_count': int,
+            'value_distribution': FloatTensor[V_g] | None,
+            'values': LongTensor[V_g] | None,
+            'normalized_entropy': float | None,
+        }
 
-    Uses the eval artifact's joint_fire_count, firing_count, and
-    index_layout. Requires that the artifact was produced with both
-    per_feature and joint_fire_and_entropy flags set.
+    `value_distribution` is the full conditional P(value | feature fires)
+    vector (length V_g, the number of observed values in the (level,
+    parent_position) group), and `values` is the matching index tensor so
+    callers can lift to the full parent-level vocab. Both are None for
+    dead features.
+
+    `normalized_entropy` is `H_per_feature[(level, parent_position), p, f]
+    / H_theoretical[(level, parent_position)]`, clipped to [0, 1], or None
+    if the reference is non-positive / non-finite, or the feature is dead.
+
+    Uses the eval artifact's joint_fire_count, firing_count, index_layout,
+    H_per_feature, and H_theoretical. Requires `--with-per-feature` and
+    `--with-entropy` (joint_fire_and_entropy flag) when the artifact was
+    produced.
     """
     if 'joint_fire_count' not in eval_artifact or 'firing_count' not in eval_artifact:
         raise ValueError(
@@ -59,6 +75,18 @@ def build_labels(eval_artifact: dict, layer_id: int, s: int, L: int) -> dict:
 
     cond = _build_cond_prob(eval_artifact)  # (lvl, pos) -> {values, cond_prob [V_g, P, F]}
     firing = eval_artifact['firing_count'].long()  # [P, F]
+    # H_per_feature and H_theoretical are optional: when the artifact was
+    # produced without --with-entropy, fall back to normalized_entropy=None
+    # for every feature (visualizers render the gray fallback). All other
+    # fields still populate.
+    H_per_feature = eval_artifact.get('H_per_feature')   # [num_groups, P, F] or None
+    H_theoretical = eval_artifact.get('H_theoretical')   # dict or None
+    index_layout = eval_artifact['index_layout']
+    group_index = {
+        (int(g['level']), int(g['position'])): idx
+        for idx, g in enumerate(index_layout)
+    }
+    has_entropy = (H_per_feature is not None) and (H_theoretical is not None)
 
     P, F = firing.shape
     target_level = parent_level(layer_id, L)
@@ -72,11 +100,33 @@ def build_labels(eval_artifact: dict, layer_id: int, s: int, L: int) -> dict:
             # artifact came from trees missing this level. Skip silently.
             continue
         group = cond[key]
-        values = group['values']  # [V_g] long
+        values_t = group['values'].clone().long()  # [V_g]
         cp = group['cond_prob']  # [V_g, P, F] (NaN for dead features)
-        if values.numel() == 0:
+        if values_t.numel() == 0:
             continue
         cp_pf = cp[:, p, :]  # [V_g, F]
+
+        g_idx = group_index.get(key)
+        if has_entropy:
+            H_ref = float(H_theoretical.get(key, float('nan')))
+            H_ref_ok = math.isfinite(H_ref) and H_ref > 0
+        else:
+            H_ref = float('nan')
+            H_ref_ok = False
+
+        def _norm_entropy(f_idx: int) -> float | None:
+            if not has_entropy or g_idx is None or not H_ref_ok:
+                return None
+            h = float(H_per_feature[g_idx, p, f_idx].item())
+            if not math.isfinite(h):
+                return None
+            v = h / H_ref
+            if v < 0.0:
+                v = 0.0
+            elif v > 1.0:
+                v = 1.0
+            return v
+
         # NaN columns at this (p, f) mean firing_count[p, f] == 0 -> dead.
         for f in range(F):
             fc = int(firing[p, f].item())
@@ -87,6 +137,9 @@ def build_labels(eval_artifact: dict, layer_id: int, s: int, L: int) -> dict:
                     'level': target_level,
                     'parent_position': target_pos,
                     'firing_count': 0,
+                    'value_distribution': None,
+                    'values': None,
+                    'normalized_entropy': None,
                 }
                 continue
             col = cp_pf[:, f]  # [V_g] float64, sums to <=1 (1 if all values were observed)
@@ -97,15 +150,21 @@ def build_labels(eval_artifact: dict, layer_id: int, s: int, L: int) -> dict:
                     'level': target_level,
                     'parent_position': target_pos,
                     'firing_count': fc,
+                    'value_distribution': None,
+                    'values': None,
+                    'normalized_entropy': None,
                 }
                 continue
             v_idx = int(col.argmax().item())
             out[(p, f)] = {
-                'value': int(values[v_idx].item()),
+                'value': int(values_t[v_idx].item()),
                 'p_value_given_fire': float(col[v_idx].item()),
                 'level': target_level,
                 'parent_position': target_pos,
                 'firing_count': fc,
+                'value_distribution': col.float().clone(),
+                'values': values_t.clone(),
+                'normalized_entropy': _norm_entropy(f),
             }
     return out
 

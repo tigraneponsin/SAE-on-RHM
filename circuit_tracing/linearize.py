@@ -417,20 +417,42 @@ def materialize_M(model, k_next: int, anchors: FullAnchors,
 
 @torch.no_grad()
 def linearized_full_forward(model, anchors: FullAnchors,
-                             x_layer_outputs: list[torch.Tensor]) -> torch.Tensor:
+                             x_layer_outputs: list[torch.Tensor],
+                             pooled_out: torch.Tensor | None = None) -> torch.Tensor:
     """Re-run the model in linearized mode by feeding x_layer_outputs[k] as
     the output of block k. Used for the bit-identity check.
 
-    x_layer_outputs : list of length K. x_layer_outputs[k] is fed as the
-                      input to block k+1 (and as ln_f input for k = K-1).
-                      Pass anchors.blocks[k].r_out at every k to get back
-                      the original logits exactly.
+    Two modes:
+
+    Legacy (pooled_out is None): x_layer_outputs has length K. Pass
+        anchors.blocks[k].r_out at every k to get back the original logits
+        exactly. The final stage is ln_f -> mean-pool -> classifier.
+
+    Pooled-last-layer (pooled_out given): the last-layer SAE lives in
+        post-ln_f pooled [d] space, so its reconstruction + error cannot be
+        spliced as a residual-stream output. x_layer_outputs then has length
+        K-1 (block 0..K-2 residual outputs, unused here) and pooled_out [d]
+        is fed straight to the classifier (ln_f + mean-pool already happened
+        before the SAE). Pass anchors.pooled to recover the original logits.
 
     Returns logits [num_classes].
     """
     model = _unwrap_compiled(model)
     has_residual = not isinstance(model, MeanClassificationTransformerNoResidual)
     K = len(model.blocks)
+
+    if pooled_out is not None:
+        if len(x_layer_outputs) != K - 1:
+            raise ValueError(
+                f'pooled mode expects {K - 1} layer outputs (blocks 0..K-2), '
+                f'got {len(x_layer_outputs)}'
+            )
+        # The spliced residual outputs for blocks 0..K-2 are not actually
+        # used (we go straight from the pooled vector to the classifier), so
+        # we skip re-running the blocks. ln_f + mean-pool already happened
+        # before the pooled SAE.
+        return model.classifier(pooled_out)
+
     if len(x_layer_outputs) != K:
         raise ValueError(
             f'expected {K} layer outputs, got {len(x_layer_outputs)}'

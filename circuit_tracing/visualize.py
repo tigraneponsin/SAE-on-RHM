@@ -75,7 +75,8 @@ def _virtual_layer(key, K: int) -> int:
 def _compute_positions(nodes: dict, kept_keys: set, N: int, K: int,
                        num_classes: int,
                        feat_fan_half: float = 0.30,
-                       err_x_offset: float = 0.40):
+                       err_x_offset: float = 0.40,
+                       pooled_last_layer: bool = False):
     """Return dict node_key -> (x, y) for every key in kept_keys.
 
     Layout:
@@ -95,8 +96,20 @@ def _compute_positions(nodes: dict, kept_keys: set, N: int, K: int,
         - Logit nodes evenly spread across the SAME x-range as features
           ([0, N-1]) regardless of num_classes, so the x-axis stays a
           consistent 'position' coordinate.
+
+    When pooled_last_layer is True, the layer K-1 nodes are a single pooled
+    SAE node at position 0 (level 0 = root). Instead of pinning it to the
+    left at x=0, it is showcased at the horizontal center x = (N-1)/2 (the
+    same centering used for a single logit), on the y = K-1 line.
     """
     pos = {}
+
+    def _cell_base_x(k: int, p: int) -> float:
+        """Base x for a (layer, position) cell. The pooled last layer's single
+        position 0 is centered; everything else sits at its position index."""
+        if pooled_last_layer and k == K - 1:
+            return (N - 1) / 2.0
+        return float(p)
 
     feat_by_cell: dict = {}
     for key in kept_keys:
@@ -118,13 +131,14 @@ def _compute_positions(nodes: dict, kept_keys: set, N: int, K: int,
                 -feat_fan_half + 2 * feat_fan_half * (idx / (n_feat - 1))
                 for idx in range(n_feat)
             ]
+        base_x = _cell_base_x(k, p)
         for idx, i in enumerate(feat_list):
-            pos[('feat', k, p, i)] = (float(p) + offsets[idx], float(k))
+            pos[('feat', k, p, i)] = (base_x + offsets[idx], float(k))
 
     for key in kept_keys:
         if key[0] == 'err':
             _, k, p = key
-            pos[key] = (float(p) + err_x_offset, float(k))
+            pos[key] = (_cell_base_x(k, p) + err_x_offset, float(k))
         elif key[0] == 'embed':
             _, p = key
             pos[key] = (float(p), -1.0)
@@ -184,6 +198,26 @@ def _node_visuals():
         'logit':     {'marker': 'D', 'base_size': 120.0,
                       'fill': '#cfe2ff', 'edge': '#0b3d91'},
     }
+
+
+# White -> green gradient for normalized_entropy in [0, 1].
+# norm_ent == 0  ->  fully selective  -> green
+# norm_ent == 1  ->  uniform          -> white
+# None           ->  no eval evidence -> light gray fallback
+_ENTROPY_GREEN = (0x1a / 255.0, 0x98 / 255.0, 0x50 / 255.0)
+_ENTROPY_WHITE = (1.0, 1.0, 1.0)
+_ENTROPY_FALLBACK = '#cccccc'
+
+
+def _entropy_color(norm_entropy):
+    """RGB hex for a normalized_entropy in [0, 1] (None -> fallback gray)."""
+    if norm_entropy is None:
+        return _ENTROPY_FALLBACK
+    t = max(0.0, min(1.0, float(norm_entropy)))
+    r = _ENTROPY_GREEN[0] + (_ENTROPY_WHITE[0] - _ENTROPY_GREEN[0]) * t
+    g = _ENTROPY_GREEN[1] + (_ENTROPY_WHITE[1] - _ENTROPY_GREEN[1]) * t
+    b = _ENTROPY_GREEN[2] + (_ENTROPY_WHITE[2] - _ENTROPY_GREEN[2]) * t
+    return (r, g, b)
 
 
 def _draw_rhm_tree(ax, tree_row: dict, s: int, L: int, K: int):
@@ -288,6 +322,7 @@ def render(run_dir: Path, out_path: Path,
     N = s ** L
     y_true = int(fidelity['y_true'])
     y_pred = int(fidelity['y_pred'])
+    pooled_last_layer = bool(fidelity.get('pooled_last_layer', False))
 
     # Determine which keys are actually kept (only nodes referenced by the
     # pruned edge list, plus always-keep pure-input nodes for context).
@@ -323,7 +358,8 @@ def render(run_dir: Path, out_path: Path,
             if s_[0] != 'err' and d_[0] != 'err'
         ]
 
-    pos = _compute_positions(nodes, kept, N=N, K=K, num_classes=n_classes)
+    pos = _compute_positions(nodes, kept, N=N, K=K, num_classes=n_classes,
+                             pooled_last_layer=pooled_last_layer)
     visuals = _node_visuals()
 
     # Reference values for size scaling.
@@ -386,8 +422,12 @@ def render(run_dir: Path, out_path: Path,
                                 ref_value=p_ref)
         else:
             size = v['base_size']
+        if kind == 'feature':
+            face = _entropy_color(nodes[key].get('normalized_entropy'))
+        else:
+            face = v['fill']
         ax.scatter([x], [y], marker=v['marker'], s=size,
-                   facecolor=v['fill'], edgecolor=v['edge'],
+                   facecolor=face, edgecolor=v['edge'],
                    linewidths=0.7, zorder=3)
 
         # Text label per kind.
@@ -455,6 +495,21 @@ def render(run_dir: Path, out_path: Path,
     ax.legend(handles=legend_handles, loc='upper right', fontsize=7,
               frameon=True, framealpha=0.9)
 
+    # --- Entropy colorbar (white = uniform, green = selective) ---
+    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+    cmap = LinearSegmentedColormap.from_list(
+        'entropy_wg',
+        [_ENTROPY_GREEN, _ENTROPY_WHITE],
+    )
+    sm = ScalarMappable(norm=Normalize(vmin=0.0, vmax=1.0), cmap=cmap)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.01,
+                        location='left', shrink=0.5)
+    cbar.set_label('feature normalized entropy', fontsize=7)
+    cbar.ax.tick_params(labelsize=6)
+
     # --- RHM tree panel (right) ---
     if has_tree:
         tree_row = torch.load(tree_path, weights_only=False)
@@ -476,31 +531,69 @@ def main():
     p.add_argument('--run_dir', required=True,
                    help='Directory containing nodes.pt, edges.pt, fidelity.pt.')
     p.add_argument('--out', default=None,
-                   help='Output image path. Defaults to <run_dir>/circuit.png.')
+                   help='Output path prefix. With --format png or html, the '
+                        'corresponding extension is appended if missing. With '
+                        '--format both, a `.png` and `.html` are written. '
+                        'Defaults to <run_dir>/circuit.')
+    p.add_argument('--format', dest='fmt',
+                   choices=['png', 'html', 'both'], default='both',
+                   help='Which renderer(s) to invoke. Default: both.')
     p.add_argument('--show_all_logits', action='store_true',
                    help='Draw every class logit, not just those with incoming '
                         'pruned edges (true-class logit is always drawn).')
     p.add_argument('--hide_errors', action='store_true',
                    help='Drop error nodes and any edges touching them.')
     p.add_argument('--figsize', nargs=2, type=float, default=(14.0, 8.0),
-                   metavar=('W', 'H'))
-    p.add_argument('--dpi', type=int, default=150)
+                   metavar=('W', 'H'),
+                   help='Matplotlib PNG figure size in inches.')
+    p.add_argument('--dpi', type=int, default=150,
+                   help='Matplotlib PNG dpi.')
+    p.add_argument('--inline_js', action='store_true',
+                   help='Embed plotly.js inline in the HTML (larger file, '
+                        'works offline). Default uses the CDN.')
     args = p.parse_args()
 
     run_dir = Path(args.run_dir)
     if not run_dir.is_dir():
         raise SystemExit(f'--run_dir not a directory: {run_dir}')
-    out_path = Path(args.out) if args.out else run_dir / 'circuit.png'
 
-    final = render(
-        run_dir=run_dir,
-        out_path=out_path,
-        show_all_logits=args.show_all_logits,
-        show_errors=not args.hide_errors,
-        figsize=tuple(args.figsize),
-        dpi=args.dpi,
-    )
-    print(f'Wrote {final}')
+    out_arg = Path(args.out) if args.out else run_dir / 'circuit'
+    # Resolve PNG / HTML paths from the prefix / explicit extension.
+    suffix = out_arg.suffix.lower()
+    if args.fmt == 'png':
+        png_path = out_arg if suffix == '.png' else out_arg.with_suffix('.png')
+        html_path = None
+    elif args.fmt == 'html':
+        png_path = None
+        html_path = out_arg if suffix == '.html' else out_arg.with_suffix('.html')
+    else:  # both
+        base = out_arg.with_suffix('') if suffix in ('.png', '.html') else out_arg
+        png_path = base.with_suffix('.png')
+        html_path = base.with_suffix('.html')
+
+    written = []
+    if png_path is not None:
+        final = render(
+            run_dir=run_dir,
+            out_path=png_path,
+            show_all_logits=args.show_all_logits,
+            show_errors=not args.hide_errors,
+            figsize=tuple(args.figsize),
+            dpi=args.dpi,
+        )
+        written.append(final)
+    if html_path is not None:
+        from circuit_tracing.visualize_interactive import render_html
+        final = render_html(
+            run_dir=run_dir,
+            out_path=html_path,
+            show_all_logits=args.show_all_logits,
+            show_errors=not args.hide_errors,
+            inline_js=args.inline_js,
+        )
+        written.append(final)
+    for f in written:
+        print(f'Wrote {f}')
 
 
 if __name__ == '__main__':

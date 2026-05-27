@@ -77,6 +77,8 @@ def main():
         cmd += ['--sae_token_idx', str(c['sae_token_idx'])]
     if c.get('no_act_scale', False):
         cmd += ['--no_act_scale']
+    if c.get('model_variant', 'best') != 'best':
+        cmd += ['--model_variant', c['model_variant']]
     if args.device is not None:
         cmd += ['--device', args.device]
 

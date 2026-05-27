@@ -90,6 +90,32 @@ def sae_forward(x: torch.Tensor, sae, act_scale: float):
     return z, x_hat, e
 
 
+@torch.no_grad()
+def sae_forward_pooled(pooled_vec: torch.Tensor, sae, act_scale: float):
+    """Run a mean-pooled last-layer SAE on a single pooled vector.
+
+    A mean_pooled SAE is trained on ln_f(x_{K-1}).mean(seq), so its encoder
+    input and reconstruction live in post-ln_f pooled space (== anchors.pooled),
+    NOT residual-stream space.
+
+    pooled_vec : [d]  the pooled activation (anchors.pooled).
+
+    Returns (z, x_hat, e):
+      z     : [1, F]  raw post-ReLU encoder activations (kept 2-D so the rest
+                       of the pipeline can index [0, i] and key labels (0, f)).
+      x_hat : [d]     reconstruction in pooled space.
+      e     : [d]     error (pooled_vec - x_hat). By construction x_hat + e ==
+                       pooled_vec.
+    """
+    x = pooled_vec.reshape(1, -1)  # [1, d]
+    x_scaled = act_scale * x
+    z = torch.relu(x_scaled @ sae.encoder.weight.T + sae.encoder.bias)  # [1, F]
+    x_hat_scaled = z @ sae.decoder.weight.T + sae.decoder.bias  # [1, d]
+    x_hat = (x_hat_scaled / act_scale).reshape(-1)  # [d]
+    e = pooled_vec.reshape(-1) - x_hat  # [d]
+    return z, x_hat, e
+
+
 # ---------------------------------------------------------------------------
 # Materialized-matrix path (used when N*d is small enough)
 # ---------------------------------------------------------------------------
@@ -311,6 +337,80 @@ def edges_layer_to_layer(
 
 
 # ---------------------------------------------------------------------------
+# Layer K-2 (per-position) -> pooled last-layer SAE edges
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def edges_layer_to_pooled(
+    model, anchors: FullAnchors,
+    z_km2: torch.Tensor, e_km2: torch.Tensor,    # [N, F_{K-2}], [N, d]
+    W_dec_km2: torch.Tensor, act_scale_km2: float,  # [d, F_{K-2}], float
+    W_enc_pooled: torch.Tensor, act_scale_pooled: float,  # [F_p, d], float
+    z_pooled: torch.Tensor,                       # [1, F_p] (active filter)
+):
+    """Attribution edges from per-position layer K-2 into the pooled last-layer
+    SAE.
+
+    A source perturbation at layer K-2 passes through the linearized last block
+    M_{K-1}, then through the *centered* ln_f + mean-pool map (collapsing the N
+    positions to a single [d] vector), then into the pooled SAE encoder:
+
+        pooled_pert = _lnf_pool_lin(M_{K-1}(v))            # [d], centered
+        pre[j]      = act_scale_pooled * (W_enc_pooled[j] @ pooled_pert)
+
+    Source vectors (one per active feature, one per error position):
+        feat (p, i):  v[p] = z_{K-2}[p, i] * (W_dec_{K-2}[:, i] / act_scale_{K-2})
+        err  (p):     v[p] = e_{K-2}[p]
+
+    Closure-only: the destination is a single pooled node, so the matrix path
+    gives no benefit. One M_{K-1} call per active source.
+
+    Returns (feat_edges, err_edges):
+      feat_edges : list of (i, p, j, 0, weight)   -- dst position forced to 0
+      err_edges  : list of (p, j, 0, weight)
+    Filtered to z_pooled[0, j] > 0.
+    """
+    N, d = e_km2.shape
+    K = len(model.blocks)
+    active_dst = (z_pooled.reshape(-1) > 0)  # [F_p]
+    if not active_dst.any():
+        return [], []
+    j_dst = active_dst.nonzero(as_tuple=False).reshape(-1)  # [num_dst]
+    Wenc_active = W_enc_pooled[j_dst]  # [num_dst, d]
+
+    M = make_M(model, K - 1, anchors)
+
+    v = torch.zeros(N, d, device=e_km2.device, dtype=e_km2.dtype)
+
+    def _proj(v_src):
+        pooled_pert = _lnf_pool_lin(M(v_src), model, anchors)  # [d], centered
+        return act_scale_pooled * (Wenc_active @ pooled_pert)  # [num_dst]
+
+    # ---- feat -> pooled ----
+    feat_edges = []
+    active_src = z_km2 > 0  # [N, F_{K-2}]
+    src_idx = active_src.nonzero(as_tuple=False)
+    for s in range(src_idx.size(0)):
+        p, i = int(src_idx[s, 0]), int(src_idx[s, 1])
+        v.zero_()
+        v[p] = z_km2[p, i] * (W_dec_km2[:, i] / act_scale_km2)
+        proj = _proj(v)  # [num_dst]
+        for t in range(j_dst.numel()):
+            feat_edges.append((i, p, int(j_dst[t].item()), 0, float(proj[t].item())))
+
+    # ---- err -> pooled ----
+    err_edges = []
+    for p in range(N):
+        v.zero_()
+        v[p] = e_km2[p]
+        proj = _proj(v)  # [num_dst]
+        for t in range(j_dst.numel()):
+            err_edges.append((p, int(j_dst[t].item()), 0, float(proj[t].item())))
+
+    return feat_edges, err_edges
+
+
+# ---------------------------------------------------------------------------
 # Embedding -> layer-0-feature edges (M_0)
 # ---------------------------------------------------------------------------
 
@@ -428,5 +528,50 @@ def edges_final_layer_to_logits_per_class(
         per_class = W_cls @ pooled_v  # [num_classes]
         for c in range(num_classes):
             err_to_logit.append((p, c, float(per_class[c].item())))
+
+    return feat_to_logit, err_to_logit
+
+
+@torch.no_grad()
+def edges_pooled_final_to_logits_per_class(
+    model,
+    z_pooled: torch.Tensor,       # [1, F] or [F] pooled SAE activations
+    e_pooled: torch.Tensor,       # [d] pooled error
+    W_dec_pooled: torch.Tensor,   # [d, F] pooled SAE decoder weight
+    act_scale_pooled: float,
+    num_classes: int,
+):
+    """Per-class final-layer attribution for a pooled last-layer SAE.
+
+    The pooled SAE feature already lives in post-ln_f pooled space, so ln_f and
+    mean-pool have already been applied. There is no _lnf_pool_lin, no 1/N, and
+    a single position p=0. The classifier is a bare nn.Linear, so:
+
+        feat i -> logit c:  W_cls[c] @ (z_pooled[i] * W_dec_pooled[:, i] / act_scale_pooled)
+        err    -> logit c:  W_cls[c] @ e_pooled
+
+    Summed over active features + error this equals W_cls @ pooled + b_cls ==
+    logits (completeness), since x_hat_pooled + e_pooled == pooled.
+
+    Returns:
+      feat_to_logit : list of (i, 0, c, weight)
+      err_to_logit  : list of (0, c, weight)
+    Filtered to z_pooled[i] > 0.
+    """
+    z = z_pooled.reshape(-1)  # [F]
+    W_cls = model.classifier.weight  # [num_classes, d]
+
+    feat_to_logit = []
+    active = (z > 0).nonzero(as_tuple=False).reshape(-1)
+    for i in active.tolist():
+        contrib = z[i] * (W_dec_pooled[:, i] / act_scale_pooled)  # [d]
+        per_class = W_cls @ contrib  # [num_classes]
+        for c in range(num_classes):
+            feat_to_logit.append((i, 0, c, float(per_class[c].item())))
+
+    err_to_logit = []
+    per_class_err = W_cls @ e_pooled.reshape(-1)  # [num_classes]
+    for c in range(num_classes):
+        err_to_logit.append((0, c, float(per_class_err[c].item())))
 
     return feat_to_logit, err_to_logit

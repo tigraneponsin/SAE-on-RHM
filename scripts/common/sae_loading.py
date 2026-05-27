@@ -218,6 +218,10 @@ def load_sae(ckpt_path: str, input_dim, device: str, load_model: bool = True):
         # rules_source recorded at SAE training time: 'artifact' or 'seed_rules_resampled'
         'sae_rules_source': dataset_split.get('rules_source', None),
         'sae_token_idx': int(setup.get('sae_token_idx', 0)),
+        # which positions fed the SAE at training time: all_tokens, one_token,
+        # cls_token, or mean_pooled. Old checkpoints predate this field; treat
+        # as all_tokens (per-position) since that was the only mode then.
+        'sae_activation_source': str(setup.get('sae_activation_source', 'all_tokens')),
         'act_scale': act_scale,
         # which transformer weights this SAE was trained against. Old SAE artifacts
         # predate this field and were always trained on 'last' weights.

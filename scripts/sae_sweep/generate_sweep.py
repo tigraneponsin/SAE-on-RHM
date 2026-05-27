@@ -98,6 +98,8 @@ def _parse_args():
                    help=f'Number of log-spaced checkpoints per job (default: {DEFAULT_LOG_POINTS}).')
     p.add_argument('--no_act_scale', action='store_true', default=False,
                    help='Disable activation rescaling for all jobs in the sweep.')
+    p.add_argument('--model_variant', choices=['best', 'last'], default='best',
+                   help='Which transformer checkpoint to use: "best" (default) or "last".')
     p.add_argument('--append', action='store_true', default=False,
                    help='Append to existing sweep_configs.json instead of overwriting. '
                         'Useful for combining different per-layer settings.')
@@ -210,6 +212,7 @@ def main():
     token_idx = args.sae_token_idx if args.sae_token_idx is not None else DEFAULT_TOKEN_IDX
     eval_size = args.sae_eval_size if args.sae_eval_size is not None else DEFAULT_EVAL_SIZE
     no_act_scale = args.no_act_scale if args.no_act_scale else DEFAULT_NO_ACT_SCALE
+    model_variant = args.model_variant
 
     n_log_points = args.sae_log_points if args.sae_log_points is not None else DEFAULT_LOG_POINTS
 
@@ -263,6 +266,7 @@ def main():
             'sae_lambda_warmup_frac': float(raw['sae_lambda_warmup_frac']),
             'sae_lr_decay_frac': float(raw['sae_lr_decay_frac']),
             'no_act_scale': bool(no_act_scale),
+            'model_variant': model_variant,
         }
         c['outname'] = _make_outname(outdir, trsf_tag, c)
         configs.append(c)
