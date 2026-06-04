@@ -234,20 +234,27 @@ def _edges_via_matrix(
     if num_src == 0:
         feat_edges = []
     else:
-        # B[q, p, j, i] = T[q, p, j, c2] @ W_dec_k[c2, i]
-        B = torch.einsum('qpjd,di->qpji', T, W_dec_k)
         scale = act_scale_kp1 / act_scale_k
-        contrib = scale * B * z_k.unsqueeze(0).unsqueeze(2)  # [q, p, j, i] * z_k[p, i]
-
         p_src = src_idx[:, 0]
         i_src = src_idx[:, 1]
         q_dst = dst_idx[:, 0]
         j_dst = dst_idx[:, 1]
-        # contrib has shape [N, N, F_kp1, F_k] (axes: q, p, j, i).
-        # Step 1: pick along (p, i) axes -> [num_src, N(q), F_kp1]
-        sel_src = contrib[:, p_src, :, :].permute(1, 0, 2, 3)  # [num_src, N(q), F_kp1, F_k]
-        sel_src = sel_src[torch.arange(num_src, device=contrib.device), :, :, i_src]  # [num_src, N, F_kp1]
-        W_edges = sel_src[:, q_dst, j_dst]  # [num_src, num_dst]
+
+        # The full edge weight is
+        #   W_edges[s, t] = scale * z_k[p_src[s], i_src[s]]
+        #       * sum_c2 T[q_dst[t], p_src[s], j_dst[t], c2] * W_dec_k[c2, i_src[s]]
+        # Materializing contrib = scale * (T @ W_dec_k) * z_k over the full
+        # [N, N, F_kp1, F_k] grid (then fancy-indexing) needs ~tens of GiB.
+        # Instead gather only the active (q, j) and (p, i) slices first, so the
+        # largest intermediate is [num_dst, num_src, d].
+        T_dst = T[q_dst, :, j_dst, :]            # [num_dst, N, d] (over active q,j)
+        T_dst_p = T_dst[:, p_src, :]             # [num_dst, num_src, d] (over active p)
+        Wd_src = W_dec_k[:, i_src]               # [d, num_src] (over active i)
+        # Contract c2 with the matching source column for each s.
+        W_edges = torch.einsum('tsd,ds->st', T_dst_p, Wd_src)  # [num_src, num_dst]
+        z_src = z_k[p_src, i_src]                # [num_src]
+        W_edges = (scale * z_src).unsqueeze(1) * W_edges  # [num_src, num_dst]
+
         i_col = i_src.unsqueeze(1).expand(num_src, num_dst).reshape(-1)
         p_col = p_src.unsqueeze(1).expand(num_src, num_dst).reshape(-1)
         j_col = j_dst.unsqueeze(0).expand(num_src, num_dst).reshape(-1)

@@ -5,14 +5,19 @@
 # forward, SAE forwards, full attribution) run ONCE; only pruning + grouping
 # + per-config save happen per cell.
 #
+# Inputs are resolved automatically from a parent directory that holds one
+# per-layer SAE sweep folder (each with its analysis_files/), plus one lambda1
+# per layer. The matching SAE checkpoint (nearest lambda1) and its .sae_eval.pt
+# are picked per layer, and the transformer train_output is auto-detected from
+# the selected checkpoints (see scripts/sae_sweep/resolve_circuit_inputs.py).
+#
 # Outputs are written under --out_dir as one subdir per cell named
 #   node_<x>__edge_<y>/
 # plus a top-level sweep_summary.json that the interactive HTML viewer reads.
 #
 # Required flags:
-#   --train_output PATH
-#   --sae_ckpts PATH [PATH ...]
-#   --sae_eval_artifacts PATH [PATH ...]
+#   --parent_dir PATH        dir containing the per-layer SAE sweep folders
+#   --lambda1 L:V [L:V ...]   one LAYER:VALUE pair per layer (e.g. 0:0.01 1:0.02)
 #   --out_dir PATH
 #   --input_idx N
 #   --node_thresholds F [F ...]
@@ -26,11 +31,10 @@
 #   --device cuda|cpu     [cuda]
 #   --model_variant best|last [auto]
 #
-# Example (3x3 grid):
+# Example (3x3 grid over layers 0,1,2 at lambda1=0.01 each):
 #   sbatch slurm/sae/run_circuit_trace_sweep.sh \
-#       --train_output /work/.../transformer.pt \
-#       --sae_ckpts /work/.../L0.pt /work/.../L1.pt /work/.../L2.pt \
-#       --sae_eval_artifacts /work/.../L0.sae_eval.pt /work/.../L1.sae_eval.pt /work/.../L2.sae_eval.pt \
+#       --parent_dir /work/.../v_16_L_3_m_16_.../ \
+#       --lambda1 0:0.01 1:0.01 2:0.01 \
 #       --out_dir /work/.../circuit_sweep/input42 \
 #       --input_idx 42 \
 #       --node_thresholds 0.7 0.8 0.9 \
@@ -57,7 +61,7 @@ set -euo pipefail
 REPO_DIR=/home/ponsin/SAE-on-RHM
 
 # -- Defaults -----------------------------------------------------------------
-TRAIN_OUTPUT=""
+PARENT_DIR=""
 OUT_DIR=""
 INPUT_IDX=""
 EVAL_SEED=0
@@ -66,17 +70,15 @@ MAT_THRESHOLD=8192
 SINK_MODE=softmax_logits
 DEVICE=cuda
 MODEL_VARIANT=""
-SAE_CKPTS=()
-EVAL_ARTS=()
+LAMBDA1=()
 NODE_THRESHOLDS=()
 EDGE_THRESHOLDS=()
 
 usage() {
     cat <<'EOF'
 Usage: sbatch slurm/sae/run_circuit_trace_sweep.sh \
-         --train_output PATH \
-         --sae_ckpts PATH [PATH ...] \
-         --sae_eval_artifacts PATH [PATH ...] \
+         --parent_dir PATH \
+         --lambda1 L:V [L:V ...] \
          --out_dir PATH \
          --input_idx N \
          --node_thresholds F [F ...] \
@@ -85,9 +87,13 @@ Usage: sbatch slurm/sae/run_circuit_trace_sweep.sh \
          [--sink_mode softmax_logits|true_class] \
          [--device cuda|cpu] [--model_variant best|last]
 
---sae_ckpts, --sae_eval_artifacts, --node_thresholds, and --edge_thresholds
-each take one or more values; pass each list terminated by either the next
-flag or end-of-line. Sweeping a single axis is valid (pass a 1-value list).
+--parent_dir holds one per-layer SAE sweep folder (each with analysis_files/).
+--lambda1 takes one LAYER:VALUE pair per layer, contiguous from 0
+(e.g. 0:0.01 1:0.02 2:0.005). The nearest-lambda checkpoint and its eval
+artifact are selected per layer; train_output is auto-detected.
+
+--lambda1, --node_thresholds, and --edge_thresholds each take one or more
+values; pass each list terminated by either the next flag or end-of-line.
 EOF
 }
 
@@ -95,7 +101,6 @@ EOF
 # paths like ' /work/...').
 _strip() {
     local x="$1"
-    # Remove leading whitespace, then trailing whitespace.
     x="${x#"${x%%[![:space:]]*}"}"
     x="${x%"${x##*[![:space:]]}"}"
     printf '%s' "$x"
@@ -104,7 +109,7 @@ _strip() {
 # -- Argument parsing ---------------------------------------------------------
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --train_output)    TRAIN_OUTPUT=$(_strip "$2");  shift 2 ;;
+        --parent_dir)      PARENT_DIR=$(_strip "$2");    shift 2 ;;
         --out_dir)         OUT_DIR=$(_strip "$2");       shift 2 ;;
         --input_idx)       INPUT_IDX=$2;                 shift 2 ;;
         --eval_seed)       EVAL_SEED=$2;                 shift 2 ;;
@@ -113,17 +118,10 @@ while [[ $# -gt 0 ]]; do
         --sink_mode)       SINK_MODE=$2;                 shift 2 ;;
         --device)          DEVICE=$2;                    shift 2 ;;
         --model_variant)   MODEL_VARIANT=$2;             shift 2 ;;
-        --sae_ckpts)
+        --lambda1)
             shift
             while [[ $# -gt 0 && "$1" != --* ]]; do
-                SAE_CKPTS+=("$(_strip "$1")")
-                shift
-            done
-            ;;
-        --sae_eval_artifacts)
-            shift
-            while [[ $# -gt 0 && "$1" != --* ]]; do
-                EVAL_ARTS+=("$(_strip "$1")")
+                LAMBDA1+=("$(_strip "$1")")
                 shift
             done
             ;;
@@ -152,11 +150,10 @@ done
 
 # -- Validate required arguments ---------------------------------------------
 missing=()
-[[ -z "${TRAIN_OUTPUT}" ]]            && missing+=("--train_output")
+[[ -z "${PARENT_DIR}" ]]              && missing+=("--parent_dir")
 [[ -z "${OUT_DIR}" ]]                 && missing+=("--out_dir")
 [[ -z "${INPUT_IDX}" ]]               && missing+=("--input_idx")
-[[ ${#SAE_CKPTS[@]} -eq 0 ]]          && missing+=("--sae_ckpts")
-[[ ${#EVAL_ARTS[@]} -eq 0 ]]          && missing+=("--sae_eval_artifacts")
+[[ ${#LAMBDA1[@]} -eq 0 ]]            && missing+=("--lambda1")
 [[ ${#NODE_THRESHOLDS[@]} -eq 0 ]]    && missing+=("--node_thresholds")
 [[ ${#EDGE_THRESHOLDS[@]} -eq 0 ]]    && missing+=("--edge_thresholds")
 if [[ ${#missing[@]} -gt 0 ]]; then
@@ -165,27 +162,10 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     exit 1
 fi
 
-if [[ ${#SAE_CKPTS[@]} -ne ${#EVAL_ARTS[@]} ]]; then
-    echo "ERROR: --sae_ckpts (${#SAE_CKPTS[@]}) and --sae_eval_artifacts (${#EVAL_ARTS[@]}) must have the same length" >&2
+if [[ ! -d "${PARENT_DIR}" ]]; then
+    echo "ERROR: --parent_dir does not exist: ${PARENT_DIR}" >&2
     exit 1
 fi
-
-if [[ ! -f "${TRAIN_OUTPUT}" ]]; then
-    echo "ERROR: --train_output does not exist: ${TRAIN_OUTPUT}" >&2
-    exit 1
-fi
-for f in "${SAE_CKPTS[@]}"; do
-    if [[ ! -f "${f}" ]]; then
-        echo "ERROR: SAE checkpoint does not exist: ${f}" >&2
-        exit 1
-    fi
-done
-for f in "${EVAL_ARTS[@]}"; do
-    if [[ ! -f "${f}" ]]; then
-        echo "ERROR: eval artifact does not exist: ${f}" >&2
-        exit 1
-    fi
-done
 
 mkdir -p "${OUT_DIR}"
 
@@ -200,9 +180,52 @@ export PYTHONPATH="${REPO_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 # -- Redirect logs next to the outputs ----------------------------------------
 exec > "${OUT_DIR}/circuit_trace_sweep.out" 2> "${OUT_DIR}/circuit_trace_sweep.err"
 
+# -- Resolve SAE checkpoints / eval artifacts / train_output ------------------
+# resolve_circuit_inputs.py emits a JSON object; parse it into bash arrays with
+# python (handles arbitrary paths safely). Warnings from the resolver go to its
+# stderr, which we surface below.
+echo "Resolving circuit-trace inputs from ${PARENT_DIR} with lambda1=${LAMBDA1[*]}"
+set +e
+RESOLVE_JSON=$(python "${REPO_DIR}/scripts/sae_sweep/resolve_circuit_inputs.py" \
+    --parent_dir "${PARENT_DIR}" \
+    --lambda1 "${LAMBDA1[@]}" \
+    --emit json)
+RESOLVE_RC=$?
+set -e
+if [[ ${RESOLVE_RC} -ne 0 ]]; then
+    echo "ERROR: resolve_circuit_inputs.py failed (rc=${RESOLVE_RC}); see stderr above." >&2
+    exit ${RESOLVE_RC}
+fi
+
+TRAIN_OUTPUT=$(printf '%s' "${RESOLVE_JSON}" | python -c "import json,sys;print(json.load(sys.stdin)['train_output'])")
+mapfile -t SAE_CKPTS < <(printf '%s' "${RESOLVE_JSON}" | python -c "import json,sys;[print(p) for p in json.load(sys.stdin)['sae_ckpts']]")
+mapfile -t EVAL_ARTS < <(printf '%s' "${RESOLVE_JSON}" | python -c "import json,sys;[print(p) for p in json.load(sys.stdin)['sae_eval_artifacts']]")
+
+# -- Validate resolved paths --------------------------------------------------
+if [[ ${#SAE_CKPTS[@]} -ne ${#EVAL_ARTS[@]} ]]; then
+    echo "ERROR: resolved #sae_ckpts (${#SAE_CKPTS[@]}) != #eval_artifacts (${#EVAL_ARTS[@]})" >&2
+    exit 1
+fi
+if [[ ${#SAE_CKPTS[@]} -eq 0 ]]; then
+    echo "ERROR: resolver returned no SAE checkpoints" >&2
+    exit 1
+fi
+if [[ ! -f "${TRAIN_OUTPUT}" ]]; then
+    echo "ERROR: resolved train_output does not exist: ${TRAIN_OUTPUT}" >&2
+    exit 1
+fi
+for f in "${SAE_CKPTS[@]}"; do
+    [[ -f "${f}" ]] || { echo "ERROR: SAE checkpoint does not exist: ${f}" >&2; exit 1; }
+done
+for f in "${EVAL_ARTS[@]}"; do
+    [[ -f "${f}" ]] || { echo "ERROR: eval artifact does not exist: ${f}" >&2; exit 1; }
+done
+
 echo "======================================================================"
 echo "Job:           ${SLURM_JOB_ID:-NA}"
 echo "Node:          ${SLURMD_NODENAME:-NA}"
+echo "PARENT_DIR:    ${PARENT_DIR}"
+echo "LAMBDA1:       ${LAMBDA1[*]}"
 echo "TRAIN_OUTPUT:  ${TRAIN_OUTPUT}"
 echo "OUT_DIR:       ${OUT_DIR}"
 echo "INPUT_IDX:     ${INPUT_IDX}"

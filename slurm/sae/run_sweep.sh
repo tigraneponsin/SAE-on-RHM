@@ -29,7 +29,10 @@
 # =============================================================================
 # USER: set these two paths
 # =============================================================================
-SWEEP_CONFIGS=/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_8_L_4_m_8_wdecay_0.0001_dropout_0.1_nores/sweep_alltokens_layer3_lambda1_zoom/sweep_configs.json
+# SWEEP_CONFIGS may be overridden from the environment (e.g. by run_full_sweep.sh
+# via `sbatch --export`). When unset, the hardcoded default below is used, so the
+# manual workflow is unchanged.
+SWEEP_CONFIGS="${SWEEP_CONFIGS:-/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_8_L_4_m_8_wdecay_0.0001_dropout_0.1_freeclassnores/sweep_alltokens_layer3_lambda1_zoom/sweep_configs.json}"
 REPO_DIR=/home/ponsin/SAE-on-RHM
 # =============================================================================
 
