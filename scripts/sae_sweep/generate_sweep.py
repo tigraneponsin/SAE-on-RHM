@@ -185,8 +185,11 @@ def _make_outname(outdir: Path, trsf_tag: str, c: dict) -> str:
     ld = c['sae_latent_dim'] if c['sae_latent_dim'] is not None else 'auto'
     lr_str = f"{c['sae_lr']:.0e}".replace('+', '').replace('-0', '-')
     l1_str = f"{c['sae_lambda_l1']:.3g}".replace('+', '')
+    # Checkpoints (and their per-job .out/.err logs, derived from this path by
+    # run_sweep.sh) land in a sae_checkpoints/ subfolder, sibling to the eval's
+    # analysis_files/ and analysis_plots/. run_one.py mkdir -p's the parent.
     return str(
-        outdir / (
+        outdir / 'sae_checkpoints' / (
             f"sae_{trsf_tag}"
             f"_layer{c['sae_layer']}"
             f"_{_activation_tag(c)}"

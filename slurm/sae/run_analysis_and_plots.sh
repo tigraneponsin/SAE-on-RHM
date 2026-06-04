@@ -79,6 +79,13 @@ ANALYSIS_DIR="${SWEEP_DIR}/analysis_files"
 PLOTS_DIR="${SWEEP_DIR}/analysis_plots"
 mkdir -p "${ANALYSIS_DIR}" "${PLOTS_DIR}"
 
+# Checkpoints may live in <sweep>/sae_checkpoints/ (new layout) or flat in the
+# sweep dir (old layout). Prefer the subfolder when it exists and holds *.pt.
+CKPT_DIR="${SWEEP_DIR}"
+if compgen -G "${SWEEP_DIR}/sae_checkpoints/*.pt" > /dev/null 2>&1; then
+    CKPT_DIR="${SWEEP_DIR}/sae_checkpoints"
+fi
+
 # -- Environment setup --------------------------------------------------------
 # Some conda activation scripts reference unset vars; disable nounset temporarily.
 set +u
@@ -93,6 +100,7 @@ echo "======================================================================"
 echo "Job:         ${SLURM_JOB_ID:-NA}"
 echo "Node:        ${SLURMD_NODENAME:-NA}"
 echo "SWEEP_DIR:   ${SWEEP_DIR}"
+echo "CKPT_DIR:    ${CKPT_DIR}"
 echo "ANALYSIS_DIR:${ANALYSIS_DIR}"
 echo "PLOTS_DIR:   ${PLOTS_DIR}"
 echo "EVAL_SIZE:   ${EVAL_SIZE}"
@@ -122,10 +130,10 @@ CSV_PATH="${ANALYSIS_DIR}/sweep_metrics.csv"
 
 # -- Step 1: streaming eval (same call as run_analysis.sh) --------------------
 echo ""
-echo "[1/3] Streaming eval -> ${ANALYSIS_DIR}"
+echo "[1/3] Streaming eval ${CKPT_DIR} -> ${ANALYSIS_DIR}"
 set +e
 srun python "${REPO_DIR}/scripts/sae_eval/run.py" \
-    --sweep_dir "${SWEEP_DIR}" \
+    --sweep_dir "${CKPT_DIR}" \
     --out_dir "${ANALYSIS_DIR}" \
     --eval_size "${EVAL_SIZE}" \
     --batch_size "${BATCH_SIZE}" \

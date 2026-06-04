@@ -13,7 +13,10 @@
 #
 # Outputs are written under --out_dir as one subdir per cell named
 #   node_<x>__edge_<y>/
-# plus a top-level sweep_summary.json that the interactive HTML viewer reads.
+# plus a top-level sweep_summary.json. After the trace cells are built, the
+# interactive 2-slider plot is rendered automatically to
+#   <out_dir>/sweep_circuit.html
+# (via circuit_tracing.visualize_sweep; no separate step needed).
 #
 # Required flags:
 #   --parent_dir PATH        dir containing the per-layer SAE sweep folders
@@ -271,6 +274,25 @@ srun python -m circuit_tracing.circuit_trace_sweep \
 EXIT_CODE=$?
 set -e
 
+# -- Plot the sweep into an interactive HTML (visualize_sweep.py) -------------
+# Only if the trace sweep succeeded; a plot failure is reported but does not
+# mask the (successful) trace exit code. Writes <OUT_DIR>/sweep_circuit.html.
+VIZ_EXIT=0
+if [[ ${EXIT_CODE} -eq 0 ]]; then
+    echo ""
+    echo "Plotting sweep -> ${OUT_DIR}/sweep_circuit.html"
+    set +e
+    srun python -m circuit_tracing.visualize_sweep \
+        --sweep_dir "${OUT_DIR}"
+    VIZ_EXIT=$?
+    set -e
+    if [[ ${VIZ_EXIT} -ne 0 ]]; then
+        echo "WARNING: visualize_sweep.py failed (rc=${VIZ_EXIT}); trace outputs are intact."
+    fi
+else
+    echo "Skipping plot: circuit_trace_sweep exited with ${EXIT_CODE}."
+fi
+
 END_EPOCH=$(date +%s)
 END_HUMAN=$(date '+%Y-%m-%d %H:%M:%S %Z')
 ELAPSED_SEC=$((END_EPOCH - START_EPOCH))
@@ -280,5 +302,5 @@ ELAPSED_S=$((ELAPSED_SEC % 60))
 
 echo "END:           ${END_HUMAN}"
 printf 'ELAPSED:       %02d:%02d:%02d (%ds)\n' "${ELAPSED_H}" "${ELAPSED_M}" "${ELAPSED_S}" "${ELAPSED_SEC}"
-echo "Circuit-trace sweep finished with exit code ${EXIT_CODE}."
+echo "Circuit-trace sweep finished with exit code ${EXIT_CODE} (plot exit ${VIZ_EXIT})."
 exit ${EXIT_CODE}

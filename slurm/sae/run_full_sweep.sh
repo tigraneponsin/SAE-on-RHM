@@ -1,20 +1,27 @@
 #!/bin/bash
 # =============================================================================
-# One-shot SAE sweep: train -> eval -> plots, as a single submission.
+# One-shot SAE sweep: (generate ->) train -> eval -> plots, single submission.
 #
 # This is a thin SUBMITTER (run it on the login node, not via sbatch). It:
+#   0. (optional) generates sweep_configs.json from sweep params via
+#      scripts/sae_sweep/generate_sweep.py (CPU-only, runs here),
 #   1. submits the training array (slurm/sae/run_sweep.sh) sized to the sweep,
 #   2. submits a dependent (afterok) analysis+plots job
 #      (slurm/sae/run_analysis_and_plots.sh) on the same sweep dir.
 #
 # The training array runs in parallel exactly as before; the eval+plots step
 # only starts once every array task has finished successfully. All the existing
-# entry points (run_sweep.sh, run_analysis.sh, the plot scripts) still work
-# standalone -- this just chains them.
+# entry points (generate_sweep.py, run_sweep.sh, run_analysis.sh, the plot
+# scripts) still work standalone -- this just chains them.
 #
-# Usage:
+# Three ways to point it at a sweep:
 #   bash slurm/sae/run_full_sweep.sh --sweep_configs /path/to/sweep_configs.json
 #   bash slurm/sae/run_full_sweep.sh --sweep_dir /path/to/sweep_dir
+#   bash slurm/sae/run_full_sweep.sh [eval/plot opts] --gen <generate_sweep.py args...>
+#
+# With --gen, everything AFTER it is forwarded verbatim to generate_sweep.py and
+# must include --outdir (so the resulting sweep_configs.json can be located).
+# Put any eval/plot knobs BEFORE --gen.
 #
 # Optional eval/plot knobs (forwarded to run_analysis_and_plots.sh):
 #   --eval_size N     [32768]
@@ -24,10 +31,16 @@
 #   --xlim MIN MAX    [none]    lambda-axis limits shared by both plots
 #   --err_tolerance F [0.01]    entropy threshold tolerance
 #
-# Example:
+# Examples:
 #   bash slurm/sae/run_full_sweep.sh \
 #       --sweep_configs /work/.../my_sweep/sweep_configs.json \
 #       --eval_size 65536 --xlim 1e-3 1e-1
+#
+#   bash slurm/sae/run_full_sweep.sh --xlim 1e-3 1e-1 --gen \
+#       --outdir /work/.../my_sweep \
+#       --train_output /work/.../transformer.pt \
+#       --sae_layer 0,1,2 --sae_lambda_l1 0.001,0.01,0.1 \
+#       --sae_activation_source all_tokens
 # =============================================================================
 
 set -euo pipefail
@@ -35,6 +48,7 @@ set -euo pipefail
 REPO_DIR=/home/ponsin/SAE-on-RHM
 RUN_SWEEP="${REPO_DIR}/slurm/sae/run_sweep.sh"
 RUN_ANALYSIS_PLOTS="${REPO_DIR}/slurm/sae/run_analysis_and_plots.sh"
+GENERATE_SWEEP="${REPO_DIR}/scripts/sae_sweep/generate_sweep.py"
 
 # -- Defaults -----------------------------------------------------------------
 SWEEP_CONFIGS=""
@@ -46,19 +60,27 @@ DEDUPE=1
 XLIM_MIN=""
 XLIM_MAX=""
 ERR_TOL=0.01
+GEN_ARGS=()
+DO_GEN=0
 
 usage() {
     cat <<'EOF'
-Usage: bash slurm/sae/run_full_sweep.sh (--sweep_configs PATH | --sweep_dir PATH)
+Usage: bash slurm/sae/run_full_sweep.sh
+         (--sweep_configs PATH | --sweep_dir PATH | --gen <generate_sweep.py args>)
          [--eval_size N] [--batch_size N] [--device D] [--dedupe 0|1]
          [--xlim MIN MAX] [--err_tolerance F]
 
-Either --sweep_configs (path to sweep_configs.json) or --sweep_dir (the dir that
-contains sweep_configs.json) is required.
+Point it at a sweep in one of three ways:
+  --sweep_configs PATH   path to an existing sweep_configs.json
+  --sweep_dir PATH       dir that contains sweep_configs.json
+  --gen ...              generate it first; everything AFTER --gen is forwarded
+                         verbatim to generate_sweep.py and must include --outdir.
+                         Put eval/plot knobs BEFORE --gen.
 EOF
 }
 
 # -- Argument parsing ---------------------------------------------------------
+# NOTE: --gen consumes the rest of the command line, so it must come last.
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --sweep_configs)  SWEEP_CONFIGS=$2; shift 2 ;;
@@ -69,6 +91,12 @@ while [[ $# -gt 0 ]]; do
         --dedupe)         DEDUPE=$2;        shift 2 ;;
         --xlim)           XLIM_MIN=$2; XLIM_MAX=$3; shift 3 ;;
         --err_tolerance)  ERR_TOL=$2;       shift 2 ;;
+        --gen)
+            DO_GEN=1
+            shift
+            GEN_ARGS=("$@")
+            break
+            ;;
         -h|--help)        usage; exit 0 ;;
         *)
             echo "ERROR: unknown argument: $1" >&2
@@ -78,9 +106,43 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# -- Step 0 (optional): generate sweep_configs.json ---------------------------
+if [[ "${DO_GEN}" -eq 1 ]]; then
+    if [[ ${#GEN_ARGS[@]} -eq 0 ]]; then
+        echo "ERROR: --gen requires generate_sweep.py arguments (including --outdir)" >&2
+        usage >&2
+        exit 1
+    fi
+    # Pull --outdir out of the passthrough args so we can locate the result.
+    GEN_OUTDIR=""
+    for ((i=0; i<${#GEN_ARGS[@]}; i++)); do
+        if [[ "${GEN_ARGS[$i]}" == "--outdir" ]]; then
+            GEN_OUTDIR="${GEN_ARGS[$((i+1))]:-}"
+            break
+        fi
+    done
+    if [[ -z "${GEN_OUTDIR}" ]]; then
+        echo "ERROR: --gen args must include '--outdir <dir>' so the resulting" >&2
+        echo "       sweep_configs.json can be located." >&2
+        exit 1
+    fi
+
+    set +u
+    source /home/ponsin/miniconda3/etc/profile.d/conda.sh
+    conda activate pcsl
+    set -u
+
+    echo "Generating sweep configs:"
+    echo "  python ${GENERATE_SWEEP} ${GEN_ARGS[*]}"
+    python "${GENERATE_SWEEP}" "${GEN_ARGS[@]}"
+
+    SWEEP_DIR="${GEN_OUTDIR%/}"
+    SWEEP_CONFIGS="${SWEEP_DIR}/sweep_configs.json"
+fi
+
 # -- Resolve sweep_configs / sweep_dir ----------------------------------------
 if [[ -z "${SWEEP_CONFIGS}" && -z "${SWEEP_DIR}" ]]; then
-    echo "ERROR: provide --sweep_configs or --sweep_dir" >&2
+    echo "ERROR: provide --sweep_configs, --sweep_dir, or --gen" >&2
     usage >&2
     exit 1
 fi

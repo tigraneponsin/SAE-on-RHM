@@ -76,8 +76,11 @@ def main():
                         help='Output figure path (default: <csv_dir>/lambda_metrics.png)')
     parser.add_argument('--xlim', type=float, nargs=2, default=None, metavar=('MIN', 'MAX'),
                         help='Lambda axis limits, e.g. --xlim 1e-2 1')
-    parser.add_argument('--log-y', action='store_true',
-                        help='Use log scale on the y-axis for ever-active and mean-active panels')
+    parser.add_argument('--log-y', dest='log_y', action='store_true', default=True,
+                        help='Use log scale on the y-axis for ever-active and mean-active '
+                             'panels (default: on)')
+    parser.add_argument('--no-log-y', dest='log_y', action='store_false',
+                        help='Use linear scale on the y-axis instead')
     args = parser.parse_args()
 
     by_layer = _load_csv(args.csv)

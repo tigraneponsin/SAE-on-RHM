@@ -85,14 +85,34 @@ def _parse_lambda_pairs(pairs: list[str]) -> dict[int, float]:
     return out
 
 
+def _ckpt_dir(sweep_folder: Path) -> Path:
+    """Where the SAE .pt checkpoints live for a sweep folder.
+
+    New layout puts them in <sweep_folder>/sae_checkpoints/; old (flat) layout
+    keeps them directly in <sweep_folder>. Prefer the subfolder when it exists
+    and holds at least one .pt.
+    """
+    sub = sweep_folder / 'sae_checkpoints'
+    if sub.is_dir() and any(
+        not c.endswith('.sae_eval.pt') for c in glob.glob(str(sub / '*.pt'))
+    ):
+        return sub
+    return sweep_folder
+
+
+def _list_ckpts(folder: Path) -> list[str]:
+    """Raw SAE checkpoints in *folder*'s checkpoint dir (excludes .sae_eval.pt)."""
+    ckpts = sorted(glob.glob(str(_ckpt_dir(folder) / '*.pt')))
+    return [c for c in ckpts if not c.endswith('.sae_eval.pt')]
+
+
 def _map_layer_to_folder(parent_dir: Path) -> dict[int, Path]:
     """For each immediate subdir with SAE checkpoints, read one checkpoint to
-    learn the layer it covers. Build {layer: folder}."""
+    learn the layer it covers. Build {layer: folder} (folder = the sweep dir,
+    not its sae_checkpoints/ subdir)."""
     layer_to_folder: dict[int, Path] = {}
     for sub in sorted(p for p in parent_dir.iterdir() if p.is_dir()):
-        ckpts = sorted(glob.glob(str(sub / '*.pt')))
-        # Skip eval-artifact dirs and any subdir without raw SAE checkpoints.
-        ckpts = [c for c in ckpts if not c.endswith('.sae_eval.pt')]
+        ckpts = _list_ckpts(sub)
         if not ckpts:
             continue
         blob = _load_ckpt(ckpts[0])
@@ -112,8 +132,7 @@ def _select_ckpt_for_layer(folder: Path, layer: int,
                            target_lambda: float) -> tuple[str, float]:
     """Pick the checkpoint in *folder* whose stored lambda1 is nearest to
     *target_lambda*. Returns (ckpt_path, actual_lambda)."""
-    ckpts = sorted(glob.glob(str(folder / '*.pt')))
-    ckpts = [c for c in ckpts if not c.endswith('.sae_eval.pt')]
+    ckpts = _list_ckpts(folder)
     best = None  # (abs_diff, actual_lambda, path)
     available = []
     for c in ckpts:
@@ -140,10 +159,15 @@ def _select_ckpt_for_layer(folder: Path, layer: int,
 
 
 def _eval_artifact_for_ckpt(ckpt_path: str) -> str:
-    """The matching .sae_eval.pt lives in <folder>/analysis_files/<stem>.sae_eval.pt."""
+    """The matching .sae_eval.pt lives in <sweep>/analysis_files/<stem>.sae_eval.pt.
+
+    The sweep root is the checkpoint's parent, unless the checkpoint sits in a
+    sae_checkpoints/ subfolder, in which case it is one level up.
+    """
     ckpt = Path(ckpt_path)
     stem = ckpt.name[:-len('.pt')] if ckpt.name.endswith('.pt') else ckpt.stem
-    art = ckpt.parent / 'analysis_files' / f'{stem}.sae_eval.pt'
+    sweep_root = ckpt.parent.parent if ckpt.parent.name == 'sae_checkpoints' else ckpt.parent
+    art = sweep_root / 'analysis_files' / f'{stem}.sae_eval.pt'
     if not art.is_file():
         _err(f'eval artifact not found for {ckpt.name}:\n  expected {art}\n'
              f'  (run the analysis step first, e.g. '
