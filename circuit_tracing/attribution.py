@@ -42,18 +42,19 @@ per-position embedding rows as source vectors:
 
     embed -> feat 0: c_{j,q <- embed,p} = act_scale_0 * W_enc_0[j] . M_0(embed_p)[q]
 
-For the final layer K-1, the "next stage" is ln_f -> mean-pool -> classifier.
-We freeze ln_f's mean/rstd (anchors.ln_f_mean, anchors.ln_f_rstd) so it is
-also affine. With ln_f_lin(v) the centered linearization of ln_f at its
-anchor:
+For the final layer K-1, the "next stage" is ln_f -> weighted-pool ->
+classifier, where the pool uses weights w[p] (uniform 1/N for meanclass, learned
+softmax for freeclass; sum_p w[p] == 1). We freeze ln_f's mean/rstd
+(anchors.ln_f_mean, anchors.ln_f_rstd) so it is also affine. With ln_f_lin(v)
+the centered linearization of ln_f at its anchor:
 
     feat -> logit_c:  W_cls[c] . ln_f_pool_lin(v_{i,p})
-                      where ln_f_pool_lin = mean over rows of the centered
-                      ln_f linearization. When v is nonzero only at row p,
-                      this equals (1/N) * W_cls[c] . ln_f_jvp_at_p(W_dec_{K-1}[:, i] / act_scale_{K-1}) * z_{K-1}[p, i]
-                      from the spec (the 1/N comes from mean-pool).
+                      where ln_f_pool_lin = sum_p w[p] * (centered ln_f
+                      linearization at row p). When v is nonzero only at row p,
+                      this equals w[p] * W_cls[c] . ln_f_jvp_at_p(W_dec_{K-1}[:, i] / act_scale_{K-1}) * z_{K-1}[p, i]
+                      (the w[p] comes from the pooling step; w[p]==1/N for meanclass).
     err  -> logit_c:  W_cls[c] . ln_f_pool_lin(err_p)
-                      = (1/N) * W_cls[c] . ln_f_jvp_at_p(e_{K-1}[p]).
+                      = w[p] * W_cls[c] . ln_f_jvp_at_p(e_{K-1}[p]).
 
 One edge per (i, p, c) and (p, c) -- per-class final-layer attribution.
 """
@@ -64,7 +65,7 @@ import torch
 
 from circuit_tracing.linearize import (
     FullAnchors, make_M, materialize_M,
-    _layernorm_apply,
+    _layernorm_apply, _pool_weights,
 )
 
 
@@ -94,9 +95,10 @@ def sae_forward(x: torch.Tensor, sae, act_scale: float):
 def sae_forward_pooled(pooled_vec: torch.Tensor, sae, act_scale: float):
     """Run a mean-pooled last-layer SAE on a single pooled vector.
 
-    A mean_pooled SAE is trained on ln_f(x_{K-1}).mean(seq), so its encoder
-    input and reconstruction live in post-ln_f pooled space (== anchors.pooled),
-    NOT residual-stream space.
+    A mean_pooled SAE is trained on the pooled post-ln_f activation
+    pool_p(ln_f(x_{K-1})[p]) (uniform mean for meanclass, learned weighted sum
+    for freeclass), so its encoder input and reconstruction live in post-ln_f
+    pooled space (== anchors.pooled), NOT residual-stream space.
 
     pooled_vec : [d]  the pooled activation (anchors.pooled).
 
@@ -457,25 +459,30 @@ def edges_embedding_to_layer0(
 
 @torch.no_grad()
 def _lnf_pool_lin(v: torch.Tensor, model, anchors: FullAnchors) -> torch.Tensor:
-    """Centered linearization of (ln_f -> mean-pool) at the anchor.
+    """Centered linearization of (ln_f -> weighted-pool) at the anchor.
 
     Given v [N, d], returns a [d] vector equal to
-        mean_pool(ln_f_lin(anchor + v)) - mean_pool(ln_f_lin(anchor)).
-    Since ln_f_lin is linear-affine and mean-pool is linear, this is a
-    linear function of v.
+        pool(ln_f_lin(anchor + v)) - pool(ln_f_lin(anchor)),
+    where pool(r) = sum_p w[p] * r[p] uses the model's pooling weights w
+    (uniform 1/N for meanclass, learned softmax for freeclass). Since ln_f_lin
+    is linear-affine and the weighted pool is linear, this is a linear function
+    of v.
 
     Note: when v is nonzero only at row p, this equals
-        (1/N) * ln_f_jvp_at_p(v[p])
-    (the 1/N comes from mean-pool over N rows). So
-    `W_cls[c] @ _lnf_pool_lin(v_p_only)` ==
-    `(1/N) * W_cls[c] @ ln_f_jvp_at_p(v[p])`, matching the spec.
+        w[p] * ln_f_jvp_at_p(v[p])
+    (the per-position weight w[p] comes from the pooling step; w[p] == 1/N for
+    meanclass). So `W_cls[c] @ _lnf_pool_lin(v_p_only)` ==
+    `w[p] * W_cls[c] @ ln_f_jvp_at_p(v[p])`, matching the spec.
     """
-    base = _layernorm_apply(
+    ln = _layernorm_apply(
         anchors.ln_f_input, model.ln_f, anchors.ln_f_mean, anchors.ln_f_rstd
-    ).mean(dim=0)
-    pert = _layernorm_apply(
+    )
+    w = _pool_weights(model, ln.size(0), ln.device, ln.dtype)  # [N]
+    base = (w.view(-1, 1) * ln).sum(dim=0)
+    ln_pert = _layernorm_apply(
         anchors.ln_f_input + v, model.ln_f, anchors.ln_f_mean, anchors.ln_f_rstd
-    ).mean(dim=0)
+    )
+    pert = (w.view(-1, 1) * ln_pert).sum(dim=0)
     return pert - base
 
 
@@ -490,11 +497,12 @@ def edges_final_layer_to_logits_per_class(
 
     For each class c and each active feature (i, p) at layer K-1:
         attr[c <- (K-1, p, i)] = W_cls[c] @ _lnf_pool_lin(v_{i,p})
-            (= (1/N) * W_cls[c] @ ln_f_jvp_at_p(W_dec_{K-1}[:,i]/act_scale_{K-1}) * z_{K-1}[p,i])
+            (= w[p] * W_cls[c] @ ln_f_jvp_at_p(W_dec_{K-1}[:,i]/act_scale_{K-1}) * z_{K-1}[p,i])
 
     For each class c and each error position p at layer K-1:
         attr[c <- (K-1, p, 'error')] = W_cls[c] @ _lnf_pool_lin(err_p)
-            (= (1/N) * W_cls[c] @ ln_f_jvp_at_p(e_{K-1}[p]))
+            (= w[p] * W_cls[c] @ ln_f_jvp_at_p(e_{K-1}[p]))
+    where w[p] is the model's pooling weight (1/N meanclass, learned freeclass).
 
     Returns:
       feat_to_logit : list of (i, p, c, weight)

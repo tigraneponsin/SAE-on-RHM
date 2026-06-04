@@ -9,5 +9,7 @@ from .transformer import (
 	ClassificationTransformer,
 	MeanClassificationTransformer,
 	MeanClassificationTransformerNoResidual,
+	FreeClassificationTransformer,
+	FreeClassificationTransformerNoResidual,
 )
 from .sae import SparseAutoencoder

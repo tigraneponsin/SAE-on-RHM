@@ -177,12 +177,31 @@ def weighted_aggregate(H: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
 # Token-position selection (ported from scripts/sae_direct_analysis/analyze_sae.py)
 # ---------------------------------------------------------------------------
 
+def model_pool_weights(model):
+    """Return the model's learned pooling weights, or None for uniform mean.
+
+    Freeclass transformers expose a `pool_weights()` method returning a [seq_len]
+    softmax vector; meanclass models do not (and pool uniformly). Handles
+    torch.compile wrappers by also checking the original module.
+    """
+    fn = getattr(model, 'pool_weights', None)
+    if fn is None:
+        inner = getattr(model, '_orig_mod', None)
+        fn = getattr(inner, 'pool_weights', None) if inner is not None else None
+    if callable(fn):
+        return fn().detach()
+    return None
+
+
 def select_activation_tokens(act: torch.Tensor, mode: str, has_cls: bool,
-                             token_idx: int):
+                             token_idx: int, pool_w: torch.Tensor | None = None):
     """Slice the SAE-input view from a (batch, seq_len, emb_dim) activation.
 
     For 'mean_pooled', the caller is expected to hook `model.ln_f` so `act` is
-    already post-ln_f; this function only mean-pools over the sequence dim.
+    already post-ln_f; this function pools over the sequence dim. If `pool_w`
+    (a [seq_len] weight vector) is given, the pooling is a learned weighted sum
+    sum_p pool_w[p]*act[:,p,:] (freeclass); otherwise it is a uniform mean
+    (meanclass).
 
     Returns (selected, token_positions) where token_positions is a 1-D
     LongTensor of 0-based real-token indices, or tensor([-1]) for
@@ -202,7 +221,11 @@ def select_activation_tokens(act: torch.Tensor, mode: str, has_cls: bool,
         num_real = selected.size(1)
         token_positions = torch.arange(num_real, dtype=torch.long)
     elif mode == 'mean_pooled':
-        selected = act.mean(dim=1, keepdim=True)
+        if pool_w is not None:
+            w = pool_w.to(device=act.device, dtype=act.dtype)
+            selected = (act * w.view(1, -1, 1)).sum(dim=1, keepdim=True)
+        else:
+            selected = act.mean(dim=1, keepdim=True)
         token_positions = torch.tensor([-1], dtype=torch.long)
     else:
         raise ValueError(f'Unknown sae_activation_source mode: {mode!r}')
@@ -366,6 +389,9 @@ def stream_sae_eval(
         lambda _m, _i, o: buf.append(o.detach())
     )
 
+    # Learned pooling weights for freeclass models (None => uniform mean).
+    pool_w = model_pool_weights(model) if mode == 'mean_pooled' else None
+
     dec_norms = sae.decoder_feature_norms().to(device)
     latent_dim = int(sae.latent_dim)
 
@@ -404,6 +430,7 @@ def stream_sae_eval(
             act = buf.pop(0)
             selected, token_positions = select_activation_tokens(
                 act, mode=mode, has_cls=has_cls, token_idx=token_idx,
+                pool_w=pool_w,
             )
             P = selected.size(1)
             flat = selected.reshape(B * P, -1) * act_scale
@@ -746,19 +773,26 @@ def stream_sae_eval(
 # ---------------------------------------------------------------------------
 
 def _make_sae_replacement_hook(sae, mode: str, has_cls: bool, token_idx: int,
-                               act_scale: float):
+                               act_scale: float, pool_w: torch.Tensor | None = None):
     """Forward-hook that replaces the layer's residuals with the SAE reconstruction
     at the positions the SAE was trained on. Residuals at other positions pass through.
 
     For 'mean_pooled', this hook is intended to be registered on `model.ln_f`
     (post-ln_f), not on a transformer block. It runs the SAE on the
-    mean-pooled output and returns a tensor whose mean over dim=1 equals the
-    SAE reconstruction, so the downstream `mean_out = x.mean(dim=1)` in the
-    meanclass classifier reads the SAE recon exactly.
+    pooled output and returns a tensor whose pooled value equals the SAE
+    reconstruction, so the downstream pooling in the classifier reads the SAE
+    recon exactly. Pooling matches the model: uniform mean when pool_w is None
+    (meanclass), or sum_p pool_w[p]*x[:,p,:] (freeclass). Broadcasting recon to
+    every position is valid for both because the pooling weights sum to 1, so
+    sum_p w[p]*recon == recon (and mean of a constant == that constant).
     """
     if mode == 'mean_pooled':
         def hook(_m, _i, output):
-            pooled = output.mean(dim=1)               # [B, D]
+            if pool_w is not None:
+                w = pool_w.to(device=output.device, dtype=output.dtype)
+                pooled = (output * w.view(1, -1, 1)).sum(dim=1)   # [B, D]
+            else:
+                pooled = output.mean(dim=1)                       # [B, D]
             flat = pooled * act_scale
             recon, _ = sae(flat)                      # [B, D]
             recon = recon / act_scale
@@ -856,7 +890,11 @@ def stream_classification_impact(
     baseline_acc, baseline_ce = _classification_pass(model, loader, device)
     baseline_err = 1.0 - baseline_acc
 
-    hook_fn = _make_sae_replacement_hook(sae, mode, has_cls, token_idx, act_scale)
+    # Learned pooling weights for freeclass models (None => uniform mean).
+    pool_w = model_pool_weights(model) if mode == 'mean_pooled' else None
+    hook_fn = _make_sae_replacement_hook(
+        sae, mode, has_cls, token_idx, act_scale, pool_w=pool_w,
+    )
     sae_acc, sae_ce = _classification_pass(
         model, loader, device,
         hook_module=_hook_module(model, layer_id, mode), hook_fn=hook_fn,

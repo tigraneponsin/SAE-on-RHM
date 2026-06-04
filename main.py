@@ -116,6 +116,43 @@ def run( config):
                     print('step : ',step, '\t running loss: {:06.4f}'.format(running_loss/(batch_idx+1)), ', test loss: {:06.4f}'.format(test_loss))
                     print_ckpt = next(print_ckpts)
 
+                    if config.test_loss_threshold is not None and test_loss <= config.test_loss_threshold:
+                        save_dict = {'t': step, 'testloss': test_loss, 'testacc': test_acc}
+                        if config.measure_train:
+                            train_loss, train_acc = measures.test(model, criterion, train_loader, config.device)
+                            save_dict['trainloss'] = train_loss
+                            save_dict['trainacc'] = train_acc
+                        dynamics.append(save_dict)
+
+                        if config.checkpoints:
+                            output = {
+                                'model': copy.deepcopy(model.state_dict()),
+                                'state': dynamics[-1],
+                                'step': step
+                            }
+                            torch.save(output, f"{config.outname}_t{step}.pt")
+                        else:
+                            if config.save_models:
+                                output = {
+                                    'rules': rhm.rules,
+                                    'init': model0.state_dict(),
+                                    'best': best,
+                                    'model': copy.deepcopy(model.state_dict()),
+                                    'dynamics': dynamics,
+                                    'step': step
+                                }
+                            else:
+                                output = {
+                                    'dynamics': dynamics,
+                                    'step': step,
+                                    'best_step': best['step'],
+                                    'best_loss': best['loss']
+                                }
+                            torch.save({'config': config, 'output': output}, f"{config.outname}.pt")
+
+                        print(f'Test loss {test_loss:.4f} <= threshold {config.test_loss_threshold:.4f}, stopping.')
+                        return None
+
                     if step>=save_ckpt:
 
                         print(f'Checkpoint at step {step}, saving data ...')
@@ -160,7 +197,7 @@ def run( config):
                         save_ckpt = next(save_ckpts)
 
 
-        if (running_loss/(batch_idx+1)) <= config.loss_threshold:
+        if not config.stop_on_test_loss and (running_loss/(batch_idx+1)) <= config.loss_threshold:
 
             save_dict = {'t': step, 'testloss': test_loss, 'testacc': test_acc}
             if config.measure_train:
@@ -229,7 +266,7 @@ parser.add_argument('--whitening', type=int, default=0)
 '''
 	ARCHITECTURE ARGS
 '''
-parser.add_argument('--model', type=str, help='architecture (fcn, hcnn, hlcn, transformer_mla, transformer_clm, transformer_class, transformer_meanclass, transformer_meanclass_nores)')
+parser.add_argument('--model', type=str, help='architecture (fcn, hcnn, hlcn, transformer_mla, transformer_clm, transformer_class, transformer_meanclass, transformer_meanclass_nores, transformer_freeclass, transformer_freeclass_nores)')
 parser.add_argument('--depth', type=int, help='depth of the network')
 parser.add_argument('--width', type=int, help='width of the network')
 parser.add_argument('--filter_size', type=int, default=None, help='filter size (CNN, LCN only)')
@@ -259,6 +296,8 @@ parser.add_argument('--save_freq', type=int, help='frequency of saves', default=
 parser.add_argument('--measure_train', default=False, action='store_true')
 parser.add_argument('--checkpoints', default=False, action='store_true')
 parser.add_argument('--loss_threshold', type=float, default=1e-3)
+parser.add_argument('--test_loss_threshold', type=float, default=None)
+parser.add_argument('--stop_on_test_loss', default=False, action='store_true', help='ignore train loss threshold; stop only when test loss <= test_loss_threshold')
 parser.add_argument('--outname', type=str, required=True, help='path of the output file')
 parser.add_argument('--save_models', default=False, action='store_true', help='save model weights (increases file size)')
 

@@ -268,10 +268,14 @@ def prepare_pipeline(args) -> dict:
     N = s ** L
     num_classes = int(cfg.num_classes)
 
-    if cfg.model not in ('transformer_meanclass', 'transformer_meanclass_nores'):
+    if cfg.model not in (
+        'transformer_meanclass', 'transformer_meanclass_nores',
+        'transformer_freeclass', 'transformer_freeclass_nores',
+    ):
         raise RuntimeError(
             f'Unsupported model variant: {cfg.model!r}. circuit_trace currently '
-            f'supports only transformer_meanclass and transformer_meanclass_nores.'
+            f'supports only transformer_meanclass, transformer_meanclass_nores, '
+            f'transformer_freeclass, and transformer_freeclass_nores.'
         )
 
     # ---- 2. Load SAEs ----

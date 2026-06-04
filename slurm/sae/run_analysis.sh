@@ -120,6 +120,7 @@ srun python "${REPO_DIR}/scripts/sae_eval/run.py" \
     --device "${DEVICE}" \
     --with-all \
     --outcsv "${OUT_DIR}/sweep_metrics.csv" \
+    --per_position_csv "${OUT_DIR}/per_position_metrics.csv" \
     "${DEDUPE_ARGS[@]}"
 EXIT_CODE=$?
 set -e

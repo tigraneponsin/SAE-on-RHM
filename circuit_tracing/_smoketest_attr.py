@@ -42,6 +42,8 @@ import torch
 from models.transformer import (
     MeanClassificationTransformer,
     MeanClassificationTransformerNoResidual,
+    FreeClassificationTransformer,
+    FreeClassificationTransformerNoResidual,
 )
 from models.sae import SparseAutoencoder
 from circuit_tracing.linearize import capture_anchors, make_M, materialize_M
@@ -55,16 +57,23 @@ from circuit_tracing.attribution import (
 def _build_tiny(variant: str, vocab_size=8, block_size=4, embedding_dim=16,
                 num_heads=2, ffwd_size=2, num_layers=2, num_classes=4, seed=0):
     torch.manual_seed(seed)
-    if variant == 'meanclass':
-        model = MeanClassificationTransformer(
-            vocab_size, block_size, embedding_dim, num_heads, ffwd_size,
-            num_layers, num_classes, dropout=0,
-        )
-    else:
-        model = MeanClassificationTransformerNoResidual(
-            vocab_size, block_size, embedding_dim, num_heads, ffwd_size,
-            num_layers, num_classes, dropout=0,
-        )
+    classes = {
+        'meanclass': MeanClassificationTransformer,
+        'nores': MeanClassificationTransformerNoResidual,
+        'freeclass': FreeClassificationTransformer,
+        'freeclass_nores': FreeClassificationTransformerNoResidual,
+    }
+    if variant not in classes:
+        raise ValueError(variant)
+    model = classes[variant](
+        vocab_size, block_size, embedding_dim, num_heads, ffwd_size,
+        num_layers, num_classes, dropout=0,
+    )
+    # For freeclass, set NON-uniform pooling logits so the weighted-pool path
+    # (w[p] != 1/N) is actually exercised vs the uniform-mean meanclass path.
+    if variant.startswith('freeclass'):
+        with torch.no_grad():
+            model.pool_logits.copy_(torch.randn(block_size))
     model.eval()
     for p in model.parameters():
         p.requires_grad = False
@@ -293,6 +302,8 @@ def _check(variant: str):
 def main():
     _check('meanclass')
     _check('nores')
+    _check('freeclass')
+    _check('freeclass_nores')
     print('\nAll attribution smoke tests passed.')
 
 

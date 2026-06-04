@@ -29,6 +29,22 @@ from models.transformer import (
     NoResidualDecoderBlock,
     MeanClassificationTransformer,
     MeanClassificationTransformerNoResidual,
+    FreeClassificationTransformer,
+    FreeClassificationTransformerNoResidual,
+)
+
+# Classes whose blocks have no residual connections. Used for has_residual
+# detection across both meanclass and freeclass families.
+_NORES_CLASSES = (
+    MeanClassificationTransformerNoResidual,
+    FreeClassificationTransformerNoResidual,
+)
+# Classes supported by anchor capture / linearization.
+_SUPPORTED_CLASSES = (
+    MeanClassificationTransformer,
+    MeanClassificationTransformerNoResidual,
+    FreeClassificationTransformer,
+    FreeClassificationTransformerNoResidual,
 )
 
 
@@ -216,6 +232,26 @@ def _unwrap_compiled(model):
     return getattr(model, '_orig_mod', model)
 
 
+def _pool_weights(model, N: int, device, dtype):
+    """Return the [N] pooling-weight vector for the model's readout head.
+
+    Freeclass models expose a learned `pool_weights()` (softmax over positions);
+    meanclass models pool uniformly, so we return a uniform 1/N vector. The
+    returned weights sum to 1 in both cases. `model` may be compiled or not;
+    callers should pass an already-unwrapped module but we handle both.
+    """
+    inner = _unwrap_compiled(model)
+    fn = getattr(inner, 'pool_weights', None)
+    if callable(fn):
+        w = fn().to(device=device, dtype=dtype)
+        if w.numel() != N:
+            raise RuntimeError(
+                f'pool_weights() returned length {w.numel()}, expected {N}'
+            )
+        return w
+    return torch.full((N,), 1.0 / N, device=device, dtype=dtype)
+
+
 @torch.no_grad()
 def capture_anchors(model, x: torch.Tensor) -> FullAnchors:
     """Run a single forward pass and capture all anchors needed for
@@ -228,15 +264,12 @@ def capture_anchors(model, x: torch.Tensor) -> FullAnchors:
     the captured anchors reproduces the original logits to fp tolerance.
     """
     model = _unwrap_compiled(model)
-    if not isinstance(
-        model,
-        (MeanClassificationTransformer, MeanClassificationTransformerNoResidual),
-    ):
+    if not isinstance(model, _SUPPORTED_CLASSES):
         raise TypeError(
-            f'capture_anchors expected MeanClassification(NoResidual)Transformer, '
-            f'got {type(model).__name__}'
+            f'capture_anchors expected a Mean/Free Classification(NoResidual)'
+            f'Transformer, got {type(model).__name__}'
         )
-    has_residual = not isinstance(model, MeanClassificationTransformerNoResidual)
+    has_residual = not isinstance(model, _NORES_CLASSES)
 
     device = next(model.parameters()).device
     x = x.to(device)
@@ -305,7 +338,8 @@ def capture_anchors(model, x: torch.Tensor) -> FullAnchors:
     full.ln_f_mean = mf.detach().clone()
     full.ln_f_rstd = sf.detach().clone()
     r_lnf = _layernorm_apply(r, model.ln_f, mf, sf)
-    pooled = r_lnf.mean(dim=0)
+    w_pool = _pool_weights(model, r_lnf.size(0), r_lnf.device, r_lnf.dtype)  # [N]
+    pooled = (w_pool.view(-1, 1) * r_lnf).sum(dim=0)
     full.pooled = pooled.detach().clone()
     logits = model.classifier(pooled)
     full.logits = logits.detach().clone()
@@ -341,7 +375,7 @@ def linearized_block_forward(model, k: int, x_in: torch.Tensor,
     attention pattern, frozen ReLU mask, frozen LayerNorm scales).
     """
     model = _unwrap_compiled(model)
-    has_residual = not isinstance(model, MeanClassificationTransformerNoResidual)
+    has_residual = not isinstance(model, _NORES_CLASSES)
     block = model.blocks[k]
     anc = anchors.blocks[k]
     return _linearized_block_forward(block, x_in, anc, has_residual)
@@ -350,13 +384,15 @@ def linearized_block_forward(model, k: int, x_in: torch.Tensor,
 @torch.no_grad()
 def linearized_lnf_pool(model, x_lnf_in: torch.Tensor,
                          anchors: FullAnchors) -> torch.Tensor:
-    """Apply ln_f (with frozen mean/rstd) and mean-pool to x_lnf_in [N, d].
-    Returns [d]. The classifier itself is just nn.Linear so callers apply it
-    directly.
+    """Apply ln_f (with frozen mean/rstd) and pool to x_lnf_in [N, d].
+    Returns [d]. Pooling matches the model's readout head: uniform mean for
+    meanclass, learned weighted sum for freeclass. The classifier itself is
+    just nn.Linear so callers apply it directly.
     """
     model = _unwrap_compiled(model)
     r = _layernorm_apply(x_lnf_in, model.ln_f, anchors.ln_f_mean, anchors.ln_f_rstd)
-    return r.mean(dim=0)
+    w_pool = _pool_weights(model, r.size(0), r.device, r.dtype)  # [N]
+    return (w_pool.view(-1, 1) * r).sum(dim=0)
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +411,7 @@ def make_M(model, k_next: int, anchors: FullAnchors):
     cancels constant offsets coming from LayerNorm bias / attention bias.
     """
     model = _unwrap_compiled(model)
-    has_residual = not isinstance(model, MeanClassificationTransformerNoResidual)
+    has_residual = not isinstance(model, _NORES_CLASSES)
     block = model.blocks[k_next]
     anc = anchors.blocks[k_next]
     r_in = anc.r_in
@@ -438,7 +474,7 @@ def linearized_full_forward(model, anchors: FullAnchors,
     Returns logits [num_classes].
     """
     model = _unwrap_compiled(model)
-    has_residual = not isinstance(model, MeanClassificationTransformerNoResidual)
+    has_residual = not isinstance(model, _NORES_CLASSES)
     K = len(model.blocks)
 
     if pooled_out is not None:

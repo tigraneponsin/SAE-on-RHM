@@ -31,6 +31,12 @@ Layer `k` is expected to resolve RHM level `L-1-k` (bottom-up composition).
 - `transformer_class`: CLS at position 0; real token `i` is at sequence position `i+1`.
 - `transformer_meanclass`: real token `i` is at sequence position `i`.
 - `transformer_meanclass_nores`: real token `i` is at sequence position `i`.
+- `transformer_freeclass`: real token `i` is at sequence position `i` (no CLS).
+- `transformer_freeclass_nores`: real token `i` is at sequence position `i` (no CLS).
+
+### Pooling Head (meanclass vs freeclass)
+- `transformer_meanclass[_nores]`: readout is a uniform mean over sequence positions after `ln_f`.
+- `transformer_freeclass[_nores]`: readout is a learned softmax-weighted sum over positions, `pooled = sum_p softmax(pool_logits)[p] * ln_f(x)[p]`. The `pool_logits` parameter (length `s^L`) is zero-initialized (uniform at init = meanclass) and learned during training. Models expose `pool_weights()`; meanclass models do not. SAE/circuit-tracing code detects freeclass via `getattr(model, 'pool_weights', None)` and falls back to uniform mean otherwise. For `sae_activation_source=mean_pooled`, the pooling uses these learned weights (vs uniform mean for meanclass).
 
 ### SAE Setup
 - Hooks into `model.blocks[layer_id]` post-block residual stream.

@@ -497,3 +497,103 @@ class MeanClassificationTransformerNoResidual(MeanClassificationTransformer):
                 ) for _ in range(self.num_layers)
             ]
         )
+
+
+class FreeClassificationTransformer(MeanClassificationTransformer):
+    """MeanClassificationTransformer with a learned pooling head.
+
+    Identical to MeanClassificationTransformer except the readout over sequence
+    positions uses learned, softmax-normalized weights instead of a uniform
+    mean. The pooling weights are static (input-independent): a single learnable
+    vector pool_logits of length block_size. At forward:
+
+        w = softmax(pool_logits)            # [block_size], sums to 1
+        pooled = sum_p w[p] * r_lnf[p]      # [embedding_dim]
+
+    pool_logits is initialized to zeros, so softmax(pool_logits) is uniform at
+    init and the model is numerically identical to MeanClassificationTransformer
+    until trained.
+    """
+    def __init__(
+        self, vocab_size, block_size, embedding_dim, num_heads, ffwd_size, num_layers,
+        num_classes, dropout=0
+    ):
+        super().__init__(
+            vocab_size=vocab_size,
+            block_size=block_size,
+            embedding_dim=embedding_dim,
+            num_heads=num_heads,
+            ffwd_size=ffwd_size,
+            num_layers=num_layers,
+            num_classes=num_classes,
+            dropout=dropout,
+        )
+        # Learnable pooling logits, one per sequence position. Zero init =>
+        # softmax is uniform, matching MeanClassificationTransformer at start.
+        self.pool_logits = nn.Parameter(torch.zeros(self.block_size))
+
+    def pool_weights(self):
+        """Return the softmax-normalized pooling weights, shape [block_size]."""
+        return torch.softmax(self.pool_logits, dim=0)
+
+    def forward(self, idx):
+        """
+        Args:
+            idx: input token indices, tensor of size (batch_size, seq_len).
+
+        Returns:
+            Logits of size (batch_size, num_classes).
+        """
+        B, T = idx.size()
+
+        token_emb = self.token_embedding_table(idx)  # [bs, seq_len, embedding_dim]
+
+        # Positional embeddings for sequence
+        pos_emb = self.position_embedding_table(torch.arange(T, device=idx.device))
+        x = token_emb + pos_emb  # [bs, seq_len, embedding_dim]
+
+        x = self.blocks(x)  # [bs, seq_len, embedding_dim]
+        x = self.ln_f(x)    # [bs,  seq_len, embedding_dim]
+
+        # Learned weighted pooling across the sequence dimension.
+        w = self.pool_weights()                       # [seq_len]
+        pooled = (x * w.view(1, -1, 1)).sum(dim=1)     # [bs, embedding_dim]
+
+        logits = self.classifier(pooled)  # [bs, num_classes]
+
+        return logits
+
+
+class FreeClassificationTransformerNoResidual(FreeClassificationTransformer):
+    """FreeClassificationTransformer variant without residual additions.
+
+    Keeps the learned pooling head and layer norms aligned with
+    FreeClassificationTransformer, but each block uses NoResidualDecoderBlock.
+    """
+    def __init__(
+        self, vocab_size, block_size, embedding_dim, num_heads, ffwd_size, num_layers,
+        num_classes, dropout=0
+    ):
+        super().__init__(
+            vocab_size=vocab_size,
+            block_size=block_size,
+            embedding_dim=embedding_dim,
+            num_heads=num_heads,
+            ffwd_size=ffwd_size,
+            num_layers=num_layers,
+            num_classes=num_classes,
+            dropout=dropout,
+        )
+
+        self.blocks = nn.Sequential(
+            *[
+                NoResidualDecoderBlock(
+                    embedding_dim=self.embedding_dim,
+                    input_size=self.block_size,
+                    num_heads=self.num_heads,
+                    ffwd_size=self.ffwd_size,
+                    decoder=False,
+                    dropout=dropout
+                ) for _ in range(self.num_layers)
+            ]
+        )

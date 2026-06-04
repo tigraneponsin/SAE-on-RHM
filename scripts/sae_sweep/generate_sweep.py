@@ -223,10 +223,13 @@ def main():
 
     if activation_source == 'mean_pooled':
         model_name = getattr(trsf_cfg, 'model', None)
-        if model_name not in {'transformer_meanclass', 'transformer_meanclass_nores'}:
+        if model_name not in {
+            'transformer_meanclass', 'transformer_meanclass_nores',
+            'transformer_freeclass', 'transformer_freeclass_nores',
+        }:
             print(
-                f'ERROR: sae_activation_source=mean_pooled requires a meanclass transformer, '
-                f'but transformer artifact has model={model_name!r}.',
+                f'ERROR: sae_activation_source=mean_pooled requires a meanclass or '
+                f'freeclass transformer, but transformer artifact has model={model_name!r}.',
                 file=sys.stderr,
             )
             sys.exit(1)

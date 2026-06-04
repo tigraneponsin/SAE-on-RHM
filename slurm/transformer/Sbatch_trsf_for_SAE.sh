@@ -6,7 +6,7 @@
 #SBATCH -e /dev/null
 
 #SBATCH --partition h100
-#SBATCH --time 05:00:00
+#SBATCH --time 03:00:00
 #SBATCH --mem 90G
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
@@ -29,6 +29,11 @@
 # $13=weight_decay      (default: 0.0)
 # $14=warmup_time       (steps; if set, enables cosine-warmup scheduler; requires $15)
 # $15=decay_time        (steps; required when $14 is set)
+# $16=test_loss_threshold (optional; stop early when test loss <= this value)
+# $17=stop_on_test_loss  (1 to disable train-loss stop and use only test_loss_threshold)
+# $18=model              (default: transformer_meanclass_nores; also accepts
+#                         transformer_meanclass, transformer_freeclass,
+#                         transformer_freeclass_nores)
 
 DEVICE="cuda"
 MODE="class"
@@ -54,6 +59,9 @@ SAVE_MODELS=${12:-1}
 WEIGHT_DECAY=${13:-0.0}
 WARMUP_TIME=${14:-""}
 DECAY_TIME=${15:-""}
+TEST_LOSS_THRESHOLD=${16:-""}
+STOP_ON_TEST_LOSS=${17:-0}
+MODEL=${18:-transformer_meanclass_nores}
 
 # Keep width for compatibility/logging in existing training code
 WIDTH=$EMBEDDING_DIM
@@ -67,9 +75,16 @@ ACCUMULATION=1
 INPUT_FORMAT="long"
 WHITENING=0
 
-MODEL="transformer_meanclass_nores"
-# Optional no-residual variant:
-# MODEL="transformer_meanclass_nores"
+# MODEL is set from $18 (default transformer_meanclass_nores). Derive a short
+# tag used in the results path. The default model keeps the historical "nores"
+# tag so old (no-$18) invocations produce the identical RESULTS_DIR.
+case "$MODEL" in
+    transformer_meanclass_nores) MODEL_TAG="nores" ;;
+    transformer_meanclass)       MODEL_TAG="meanclass" ;;
+    transformer_freeclass)       MODEL_TAG="freeclass" ;;
+    transformer_freeclass_nores) MODEL_TAG="freeclass_nores" ;;
+    *)                           MODEL_TAG="$MODEL" ;;
+esac
 OPTIM="adam"
 MOMENTUM=0.0
 PRINT_FREQ=32768
@@ -82,6 +97,14 @@ if [[ "$SAVE_MODELS" != "1" ]]; then
 fi
 SAVE_MODELS=1
 SAVE_MODEL_ARGS+=(--save_models)
+
+TEST_LOSS_THRESHOLD_ARGS=()
+if [[ -n "$TEST_LOSS_THRESHOLD" ]]; then
+    TEST_LOSS_THRESHOLD_ARGS+=(--test_loss_threshold "$TEST_LOSS_THRESHOLD")
+fi
+if [[ "$STOP_ON_TEST_LOSS" == "1" ]]; then
+    TEST_LOSS_THRESHOLD_ARGS+=(--stop_on_test_loss)
+fi
 
 SCHEDULER_ARGS=()
 if [[ -n "$WARMUP_TIME" && -n "$DECAY_TIME" ]]; then
@@ -98,7 +121,7 @@ elif [[ -n "$DECAY_TIME" ]]; then
 fi
 OUTNAME="RESULT_TRFCLASS_v_${NUM_CLASSES}_L_${NUM_LAYERS}_m=${NUM_SYNONYMS}_P_${TRAIN_SIZE}_${SLURM_ARRAY_TASK_ID}_emb_${EMBEDDING_DIM}_h_${NUM_HEADS}_lr_${LEARNING_RATE}_dropout_${DROPOUT}_wd_${WEIGHT_DECAY}.pkl"
 
-RESULTS_DIR="/work/pcsl/ponsin/Mean_Transformer/Transformer_for_SAE_nores/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}_wdecay_${WEIGHT_DECAY}_dropout_${DROPOUT}/"
+RESULTS_DIR="/work/pcsl/ponsin/Mean_Transformer/Transformer_for_SAE_${MODEL_TAG}/v_${NUM_FEATURES}_L_${NUM_LAYERS}_m_${NUM_SYNONYMS}_wdecay_${WEIGHT_DECAY}_dropout_${DROPOUT}/"
 
 mkdir -p "$RESULTS_DIR"
 
@@ -125,6 +148,7 @@ MANIFEST_PATH="${RESULTS_DIR}/${OUTNAME%.pkl}_manifest.txt"
     echo "train_size=${TRAIN_SIZE}"
     echo "test_size=${TEST_SIZE}"
     echo "input_format=${INPUT_FORMAT}"
+    echo "model=${MODEL}"
 } > "${MANIFEST_PATH}"
 echo "Saved run manifest: ${MANIFEST_PATH}"
 
@@ -163,7 +187,8 @@ srun python /home/ponsin/SAE-on-RHM/main.py \
     --loss_threshold "$LOSS_THRESHOLD" \
     --outname "$OUTNAME" \
     "${SAVE_MODEL_ARGS[@]}" \
-    "${SCHEDULER_ARGS[@]}"
+    "${SCHEDULER_ARGS[@]}" \
+    "${TEST_LOSS_THRESHOLD_ARGS[@]}"
 
 echo FINISHED AT
 date

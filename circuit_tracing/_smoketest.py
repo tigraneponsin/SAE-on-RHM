@@ -21,6 +21,8 @@ import torch
 from models.transformer import (
     MeanClassificationTransformer,
     MeanClassificationTransformerNoResidual,
+    FreeClassificationTransformer,
+    FreeClassificationTransformerNoResidual,
 )
 from circuit_tracing.linearize import (
     capture_anchors, make_M, materialize_M, linearized_full_forward,
@@ -30,22 +32,25 @@ from circuit_tracing.linearize import (
 def _build_tiny(variant: str, vocab_size=8, block_size=4, embedding_dim=16,
                 num_heads=2, ffwd_size=2, num_layers=2, num_classes=4, seed=0):
     torch.manual_seed(seed)
-    if variant == 'meanclass':
-        model = MeanClassificationTransformer(
-            vocab_size=vocab_size, block_size=block_size,
-            embedding_dim=embedding_dim, num_heads=num_heads,
-            ffwd_size=ffwd_size, num_layers=num_layers,
-            num_classes=num_classes, dropout=0,
-        )
-    elif variant == 'nores':
-        model = MeanClassificationTransformerNoResidual(
-            vocab_size=vocab_size, block_size=block_size,
-            embedding_dim=embedding_dim, num_heads=num_heads,
-            ffwd_size=ffwd_size, num_layers=num_layers,
-            num_classes=num_classes, dropout=0,
-        )
-    else:
+    classes = {
+        'meanclass': MeanClassificationTransformer,
+        'nores': MeanClassificationTransformerNoResidual,
+        'freeclass': FreeClassificationTransformer,
+        'freeclass_nores': FreeClassificationTransformerNoResidual,
+    }
+    if variant not in classes:
         raise ValueError(variant)
+    model = classes[variant](
+        vocab_size=vocab_size, block_size=block_size,
+        embedding_dim=embedding_dim, num_heads=num_heads,
+        ffwd_size=ffwd_size, num_layers=num_layers,
+        num_classes=num_classes, dropout=0,
+    )
+    # For freeclass, set NON-uniform pooling logits so the weighted-pool path
+    # (w[p] != 1/N) is actually exercised vs the uniform-mean meanclass path.
+    if variant.startswith('freeclass'):
+        with torch.no_grad():
+            model.pool_logits.copy_(torch.randn(block_size))
     model.eval()
     for p in model.parameters():
         p.requires_grad = False
@@ -110,6 +115,8 @@ def _check_variant(variant: str):
 def main():
     _check_variant('meanclass')
     _check_variant('nores')
+    _check_variant('freeclass')
+    _check_variant('freeclass_nores')
     print('\nAll smoke tests passed.')
 
 

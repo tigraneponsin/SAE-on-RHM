@@ -28,15 +28,18 @@ def parse_sae_layers(sae_layers, num_layers):
     return sorted(set(layers))
 
 
-def _select_tokens(act, activation_source, is_cls_model, token_idx):
+def _select_tokens(act, activation_source, is_cls_model, token_idx, pool_w=None):
     """Select tokens from a (B, T, D) activation tensor based on source mode.
 
     Returns a (B, T', D) tensor where T' depends on activation_source:
       - 'cls_token': T'=1, the [CLS] position
       - 'one_token': T'=1, a single real-token position (offset by 1 for CLS models)
       - 'all_tokens': all real tokens (skipping [CLS] for CLS models)
-      - 'mean_pooled': T'=1, mean over the sequence dim. The caller is expected
-                      to hook `model.ln_f` so `act` is already post-ln_f.
+      - 'mean_pooled': T'=1, pooled over the sequence dim. The caller is expected
+                      to hook `model.ln_f` so `act` is already post-ln_f. If
+                      pool_w (a [T] weight vector) is given, the pooling is a
+                      learned weighted sum sum_p pool_w[p]*act[:,p,:]; otherwise
+                      it is a uniform mean (matching meanclass models).
     """
     if activation_source == 'cls_token':
         return act[:, :1, :]
@@ -44,6 +47,9 @@ def _select_tokens(act, activation_source, is_cls_model, token_idx):
         offset = 1 if is_cls_model else 0
         return act[:, offset + token_idx : offset + token_idx + 1, :]
     elif activation_source == 'mean_pooled':
+        if pool_w is not None:
+            w = pool_w.to(device=act.device, dtype=act.dtype)
+            return (act * w.view(1, -1, 1)).sum(dim=1, keepdim=True)
         return act.mean(dim=1, keepdim=True)
     elif is_cls_model:
         return act[:, 1:, :]
@@ -62,7 +68,7 @@ def _hook_module(model, layer_id, activation_source):
 
 
 def _compute_activation_scale(model, train_loader, layer_id, activation_source,
-                               is_cls_model, token_idx, device):
+                               is_cls_model, token_idx, device, pool_w=None):
     """Compute a scalar scale so that E[||scale * x||_2] = sqrt(embedding_dim).
 
     This normalizes activations before feeding them to the SAE, making lambda
@@ -81,7 +87,7 @@ def _compute_activation_scale(model, train_loader, layer_id, activation_source,
             if not buf:
                 continue
             act = buf.pop(0)
-            act = _select_tokens(act, activation_source, is_cls_model, token_idx)
+            act = _select_tokens(act, activation_source, is_cls_model, token_idx, pool_w)
             act = act.reshape(-1, act.size(-1))
             if act.numel() == 0:
                 continue
@@ -125,7 +131,7 @@ def _sae_loss_chunked(sae, act, lambda_l1, chunk_tokens=None):
 
 def _collect_eval_loss(sae, model, eval_loader, layer_id, activation_source,
                        is_cls_model, token_idx, lambda_l1, device,
-                       eval_chunk_tokens=None, act_scale=1.0):
+                       eval_chunk_tokens=None, act_scale=1.0, pool_w=None):
     """Average SAE loss over the full eval_loader at the current SAE weights.
     Returns (total, recon, sparse) averaged across all eval tokens."""
     buf = []
@@ -140,7 +146,7 @@ def _collect_eval_loss(sae, model, eval_loader, layer_id, activation_source,
             if not buf:
                 continue
             act = buf.pop(0)
-            act = _select_tokens(act, activation_source, is_cls_model, token_idx)
+            act = _select_tokens(act, activation_source, is_cls_model, token_idx, pool_w)
             act = act.reshape(-1, act.size(-1))
             if act.numel() == 0:
                 continue
@@ -165,9 +171,12 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
         'transformer_class',
         'transformer_meanclass',
         'transformer_meanclass_nores',
+        'transformer_freeclass',
+        'transformer_freeclass_nores',
     }, (
         'post-hoc SAE is currently implemented for transformer_class, '
-        'transformer_meanclass, or transformer_meanclass_nores only'
+        'transformer_meanclass, transformer_meanclass_nores, '
+        'transformer_freeclass, or transformer_freeclass_nores only'
     )
     assert config.input_format == 'long', f'post-hoc SAE on {config.model} requires input_format=long'
 
@@ -191,16 +200,22 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
         f"sae_activation_source={config.sae_activation_source} is invalid. "
         "Use one of: all_tokens, cls_token, one_token, mean_pooled"
     )
-    if config.model in {'transformer_meanclass', 'transformer_meanclass_nores'} and activation_source == 'cls_token':
+    # Models that pool over the sequence (no [CLS] token): meanclass and the
+    # learned-pooling freeclass variants.
+    pooled_models = {
+        'transformer_meanclass', 'transformer_meanclass_nores',
+        'transformer_freeclass', 'transformer_freeclass_nores',
+    }
+    if config.model in pooled_models and activation_source == 'cls_token':
         raise ValueError(
             f'{config.model} has no [CLS] token. '
             'Use sae_activation_source=all_tokens or one_token.'
         )
     if activation_source == 'mean_pooled':
-        if config.model not in {'transformer_meanclass', 'transformer_meanclass_nores'}:
+        if config.model not in pooled_models:
             raise ValueError(
-                f'sae_activation_source=mean_pooled requires a meanclass transformer, '
-                f'but config.model={config.model}.'
+                f'sae_activation_source=mean_pooled requires a meanclass or '
+                f'freeclass transformer, but config.model={config.model}.'
             )
         last_layer = int(model.num_layers) - 1
         if layer_ids != [last_layer]:
@@ -219,6 +234,17 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
         )
 
     is_cls_model = (config.model == 'transformer_class')
+
+    # Learned pooling weights for freeclass models; None for meanclass (uniform
+    # mean fallback) and all non-pooled modes. Used only by mean_pooled.
+    pool_w = None
+    if activation_source == 'mean_pooled':
+        pool_weights_fn = getattr(model, 'pool_weights', None)
+        if callable(pool_weights_fn):
+            pool_w = pool_weights_fn().detach()
+            print(f'  using learned pooling weights (freeclass): '
+                  f'min={float(pool_w.min()):.4g}, max={float(pool_w.max()):.4g}')
+
     lambda_warmup_frac = float(getattr(config, 'sae_lambda_warmup_frac', 0.05))
     lr_decay_frac = float(getattr(config, 'sae_lr_decay_frac', 0.2))
     act_scales = {}
@@ -234,7 +260,7 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
             print(f'Computing activation scale for layer {layer_id} ...')
             act_scale = _compute_activation_scale(
                 model, train_loader, layer_id, activation_source,
-                is_cls_model, token_idx, config.device,
+                is_cls_model, token_idx, config.device, pool_w=pool_w,
             )
         act_scales[layer_id] = act_scale
 
@@ -270,7 +296,7 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
                 continue
 
             act = activation_buffer.pop(0)
-            act = _select_tokens(act, activation_source, is_cls_model, token_idx)
+            act = _select_tokens(act, activation_source, is_cls_model, token_idx, pool_w)
             act = act.reshape(-1, act.size(-1))
             act = act * act_scale
 
@@ -296,7 +322,7 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
                         sae, model, eval_loader, layer_id, activation_source,
                         is_cls_model, token_idx, 0.0, config.device,
                         eval_chunk_tokens=eval_chunk_tokens,
-                        act_scale=act_scale,
+                        act_scale=act_scale, pool_w=pool_w,
                     )
                     activation_buffer.clear()
                     eval_curve_steps.append(0)
@@ -335,7 +361,7 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
                         sae, model, eval_loader, layer_id, activation_source,
                         is_cls_model, token_idx, current_lambda, config.device,
                         eval_chunk_tokens=eval_chunk_tokens,
-                        act_scale=act_scale,
+                        act_scale=act_scale, pool_w=pool_w,
                     )
                     activation_buffer.clear()
                     eval_curve_steps.append(step + 1)
@@ -641,7 +667,7 @@ def run(args):
 if __name__ == '__main__':
     torch.set_default_dtype(torch.float32)
 
-    parser = argparse.ArgumentParser(description='Post-hoc SAE training on trained transformer_class/transformer_meanclass/transformer_meanclass_nores checkpoints')
+    parser = argparse.ArgumentParser(description='Post-hoc SAE training on trained transformer_class/transformer_meanclass/transformer_meanclass_nores/transformer_freeclass/transformer_freeclass_nores checkpoints')
 
     parser.add_argument('--train_output', type=str, default=None, help='path to main.py output .pt/.pkl produced with --save_models')
     parser.add_argument('--config_checkpoint', type=str, default=None, help='path to <outname>_config.pt from --checkpoints runs')
@@ -659,7 +685,7 @@ if __name__ == '__main__':
     parser.add_argument('--sae_steps', type=int, default=None, help='number of optimization steps for each SAE')
     parser.add_argument('--sae_batch_limit', type=int, default=None, help='max tokens per SAE step (0 uses all tokens in batch)')
     parser.add_argument('--sae_sample_batch_size', type=int, default=None, help='number of RHM samples per forward pass used to gather SAE activations')
-    parser.add_argument('--sae_activation_source', type=str, default=None, help='which positions feed SAE: all_tokens, cls_token (transformer_class only), one_token, or mean_pooled (meanclass models only; ln_f then mean over seq dim, last layer)')
+    parser.add_argument('--sae_activation_source', type=str, default=None, help='which positions feed SAE: all_tokens, cls_token (transformer_class only), one_token, or mean_pooled (meanclass/freeclass models only; ln_f then pool over seq dim at last layer -- uniform mean for meanclass, learned weights for freeclass)')
     parser.add_argument('--sae_token_idx', type=int, default=None, help='0-based index of the real token to use when sae_activation_source=one_token (counts from 0 among sequence tokens, i.e. skips [CLS] for transformer_class)')
     parser.add_argument('--sae_log_points', type=int, default=None, help='number of log-spaced checkpoints to record during SAE training (default: 50)')
     parser.add_argument('--sae_train_size', type=int, default=None, help='number of RHM samples used to train SAE')
