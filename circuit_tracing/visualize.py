@@ -42,6 +42,8 @@ from __future__ import annotations
 
 import argparse
 import pickle
+
+from circuit_tracing.notation import sae_row_label, report_level
 from pathlib import Path
 
 import torch
@@ -220,7 +222,8 @@ def _entropy_color(norm_entropy):
     return (r, g, b)
 
 
-def _draw_rhm_tree(ax, tree_row: dict, s: int, L: int, K: int):
+def _draw_rhm_tree(ax, tree_row: dict, s: int, L: int, K: int,
+                   report_notation: bool = False):
     """Draw the RHM tree that generated this input next to the circuit.
 
     tree_row is the per-input slice: tree_row[l] has length s**l, the
@@ -281,7 +284,10 @@ def _draw_rhm_tree(ax, tree_row: dict, s: int, L: int, K: int):
     ax.set_xlim(-0.7, N - 0.3)
     ax.set_ylim(-1.8, K + 0.8)
     yticks = [_y_for_level(l) for l in range(L + 1)]
-    yticklabels = [f'level {l}' for l in range(L + 1)]
+    yticklabels = [
+        f'level {report_level(l, L) if report_notation else l}'
+        for l in range(L + 1)
+    ]
     ax.set_yticks(yticks)
     ax.set_yticklabels(yticklabels)
     ax.set_xticks(list(range(N)))
@@ -305,7 +311,8 @@ def render(run_dir: Path, out_path: Path,
            show_all_logits: bool,
            show_errors: bool,
            figsize: tuple,
-           dpi: int):
+           dpi: int,
+           report_notation: bool = False):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -451,7 +458,9 @@ def render(run_dir: Path, out_path: Path,
     ax.set_ylim(-1.8, K + 0.8)
     # Y ticks: -1 = embed, 0..K-1 layers, K = logits.
     yticks = [-1] + list(range(K)) + [K]
-    yticklabels = ['embed'] + [f'layer {k}' for k in range(K)] + ['logit']
+    yticklabels = (['embed']
+                   + [sae_row_label(k, report_notation) for k in range(K)]
+                   + ['logit'])
     ax.set_yticks(yticks)
     ax.set_yticklabels(yticklabels)
     ax.set_xticks(list(range(N)))
@@ -513,7 +522,8 @@ def render(run_dir: Path, out_path: Path,
     # --- RHM tree panel (right) ---
     if has_tree:
         tree_row = torch.load(tree_path, weights_only=False)
-        _draw_rhm_tree(ax_tree, tree_row, s=s, L=L, K=K)
+        _draw_rhm_tree(ax_tree, tree_row, s=s, L=L, K=K,
+                       report_notation=report_notation)
 
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -551,6 +561,11 @@ def main():
     p.add_argument('--inline_js', action='store_true',
                    help='Embed plotly.js inline in the HTML (larger file, '
                         'works offline). Default uses the CDN.')
+    p.add_argument('--report-notation', dest='report_notation',
+                   action='store_true',
+                   help='Relabel the circuit y-axis as SAE k (1-based) instead '
+                        'of layer k, and flip RHM-tree levels to bottom-up '
+                        '(leaves=0, root=L). Display only.')
     args = p.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -580,6 +595,7 @@ def main():
             show_errors=not args.hide_errors,
             figsize=tuple(args.figsize),
             dpi=args.dpi,
+            report_notation=args.report_notation,
         )
         written.append(final)
     if html_path is not None:
@@ -590,6 +606,7 @@ def main():
             show_all_logits=args.show_all_logits,
             show_errors=not args.hide_errors,
             inline_js=args.inline_js,
+            report_notation=args.report_notation,
         )
         written.append(final)
     for f in written:

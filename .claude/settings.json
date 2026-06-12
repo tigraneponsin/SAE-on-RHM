@@ -29,7 +29,9 @@
       "Bash(grep -n 'model \"\\\\$MODEL\"\\\\|--model' /home/ponsin/SAE-on-RHM/slurm/transformer/Sbatch_trsf_for_SAE.sh)",
       "Bash(timeout 300 python main.py --device cpu --mode class --num_features 8 --num_classes 8 --num_synonyms 2 --tuple_size 2 --num_layers 2 --num_tokens 4 --seed_rules 1 --train_size 256 --test_size 256 --batch_size 64 --seed_sample 2 --input_format long --whitening 0 --model transformer_freeclass --depth 2 --width 32 --embedding_dim 32 --num_heads 2 --ffwd_size 2 --dropout 0.0 --seed_model 3 --lr 1e-3 --optim adam --max_epochs 8 --print_freq 4 --save_freq 2 --loss_threshold 1e-6 --save_models --outname /tmp/freeclass_test)",
       "Bash(timeout 200 python main.py --device cpu --mode class --num_features 8 --num_classes 8 --num_synonyms 2 --tuple_size 2 --num_layers 2 --num_tokens 4 --seed_rules 1 --train_size 256 --test_size 256 --batch_size 64 --seed_sample 2 --input_format long --whitening 0 --model transformer_freeclass_nores --depth 2 --width 32 --embedding_dim 32 --num_heads 2 --ffwd_size 2 --dropout 0.0 --seed_model 3 --lr 1e-3 --optim adam --max_epochs 4 --print_freq 4 --save_freq 2 --loss_threshold 1e-6 --save_models --outname /tmp/freeclass_nores_test)",
-      "Bash(timeout 200 python train_sae.py --train_output /tmp/freeclass_test.pt --model_variant last --device cpu --sae_activation_source mean_pooled --sae_steps 20 --sae_log_points 4 --sae_lambda_l1 1.0 --sae_lr 1e-3 --sae_train_size 128 --sae_eval_size 128 --outname /tmp/freeclass_sae.pt)"
+      "Bash(timeout 200 python train_sae.py --train_output /tmp/freeclass_test.pt --model_variant last --device cpu --sae_activation_source mean_pooled --sae_steps 20 --sae_log_points 4 --sae_lambda_l1 1.0 --sae_lr 1e-3 --sae_train_size 128 --sae_eval_size 128 --outname /tmp/freeclass_sae.pt)",
+      "Bash(cd /home/ponsin/SAE-on-RHM *)",
+      "Read(//work/**)"
     ],
     "additionalDirectories": [
       "/tmp"

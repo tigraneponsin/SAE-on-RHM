@@ -27,6 +27,8 @@ from pathlib import Path
 
 import torch
 
+from circuit_tracing.notation import sae_row_label, report_level
+
 
 # ---------------------------------------------------------------------------
 # Color helpers (mirror visualize.py)
@@ -206,10 +208,11 @@ def _edge_widths_alphas(weights, max_width=4.0, min_width=0.2,
 # Hover-text builders
 # ---------------------------------------------------------------------------
 
-def _hover_feature(key, attrs) -> str:
+def _hover_feature(key, attrs, report=False) -> str:
     _, k, p, i = key
+    blk = sae_row_label(k, report)
     parts = [
-        f'feature (layer={k}, position={p}, feat_index={i})',
+        f'feature ({blk}, position={p}, feat_index={i})',
         f'z = {float(attrs.get("z", 0)):.3f}',
         f'label_value = {attrs.get("label_value")}',
         f'P(label | fire) = {float(attrs.get("p_value_given_fire", float("nan"))):.3f}',
@@ -225,10 +228,11 @@ def _hover_feature(key, attrs) -> str:
     return '<br>'.join(parts)
 
 
-def _hover_group(key, attrs) -> str:
+def _hover_group(key, attrs, report=False) -> str:
     _, k, g_idx = key
+    blk = sae_row_label(k, report)
     parts = [
-        f'group (layer={k}, idx={g_idx})',
+        f'group ({blk}, idx={g_idx})',
         f'n_constituents = {attrs["n_constituents"]}',
         f'positions = {attrs["positions"]}',
         f'z_sum = {float(attrs["z_sum"]):.3f}',
@@ -252,9 +256,9 @@ def _hover_group(key, attrs) -> str:
     return '<br>'.join(parts)
 
 
-def _hover_err(key, attrs) -> str:
+def _hover_err(key, attrs, report=False) -> str:
     _, k, p = key
-    return f'error<br>layer={k}, position={p}'
+    return f'error<br>{sae_row_label(k, report)}, position={p}'
 
 
 def _hover_embed(key, attrs) -> str:
@@ -357,7 +361,7 @@ def _scaled_marker_size(base, value, scale_min=0.6, scale_max=2.4,
 
 
 def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
-                           p_ref: float, z_ref: float):
+                           p_ref: float, z_ref: float, report=False):
     import plotly.graph_objects as go
     feat_x, feat_y, feat_c, feat_s, feat_t, feat_l = [], [], [], [], [], []
     err_x, err_y, err_t = [], [], []
@@ -374,12 +378,12 @@ def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
             feat_c.append(_entropy_color_hex(attrs.get('normalized_entropy')))
             feat_s.append(_scaled_marker_size(14, float(attrs.get('z', 0)),
                                               ref_value=z_ref))
-            feat_t.append(_hover_feature(key, attrs))
+            feat_t.append(_hover_feature(key, attrs, report))
             lv = attrs.get('label_value')
             feat_l.append('' if lv is None else str(int(lv)))
         elif kind == 'error':
             err_x.append(x); err_y.append(y)
-            err_t.append(_hover_err(key, attrs))
+            err_t.append(_hover_err(key, attrs, report))
         elif kind == 'embedding':
             emb_x.append(x); emb_y.append(y)
             emb_t.append(_hover_embed(key, attrs))
@@ -434,7 +438,7 @@ def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
 
 
 def _node_traces_grouped(grouped_nodes: dict, kept: set, pos: dict, K: int,
-                         p_ref: float, z_ref: float):
+                         p_ref: float, z_ref: float, report=False):
     import plotly.graph_objects as go
     grp_x, grp_y, grp_c, grp_s, grp_t, grp_l = [], [], [], [], [], []
     err_x, err_y, err_t = [], [], []
@@ -451,12 +455,12 @@ def _node_traces_grouped(grouped_nodes: dict, kept: set, pos: dict, K: int,
             grp_c.append(_entropy_color_hex(attrs.get('normalized_entropy')))
             grp_s.append(_scaled_marker_size(16, float(attrs.get('z_sum', 0)),
                                              ref_value=z_ref))
-            grp_t.append(_hover_group(key, attrs))
+            grp_t.append(_hover_group(key, attrs, report))
             lv = attrs.get('label_value')
             grp_l.append('' if lv is None else str(int(lv)))
         elif kind == 'error':
             err_x.append(x); err_y.append(y)
-            err_t.append(_hover_err(key, attrs))
+            err_t.append(_hover_err(key, attrs, report))
         elif kind == 'embedding':
             emb_x.append(x); emb_y.append(y)
             emb_t.append(_hover_embed(key, attrs))
@@ -514,7 +518,7 @@ def _node_traces_grouped(grouped_nodes: dict, kept: set, pos: dict, K: int,
 # Tree panel (mirrors visualize._draw_rhm_tree)
 # ---------------------------------------------------------------------------
 
-def _tree_traces(tree_row: dict, s: int, L: int, K: int):
+def _tree_traces(tree_row: dict, s: int, L: int, K: int, report=False):
     import plotly.graph_objects as go
     N = s ** L
 
@@ -549,7 +553,8 @@ def _tree_traces(tree_row: dict, s: int, L: int, K: int):
             x = _x_for_node(l, i)
             node_x.append(x); node_y.append(y)
             node_text.append(str(int(val)))
-            hover_text.append(f'level={l}, idx={i}, value={int(val)}')
+            disp_l = report_level(l, L) if report else l
+            hover_text.append(f'level={disp_l}, idx={i}, value={int(val)}')
 
     return [
         go.Scatter(x=line_x, y=line_y, mode='lines',
@@ -648,7 +653,8 @@ def _select_kept_grouped(grouped_nodes: dict, grouped_edges: list,
 def render_html(run_dir: Path, out_path: Path,
                 show_all_logits: bool = False,
                 show_errors: bool = True,
-                inline_js: bool = False) -> Path:
+                inline_js: bool = False,
+                report_notation: bool = False) -> Path:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -737,7 +743,8 @@ def render_html(run_dir: Path, out_path: Path,
     for tr in _edge_traces(pruned_edges_u, pos_u, 'ungrouped'):
         fig.add_trace(tr, row=1, col=1)
     for tr in _node_traces_ungrouped(nodes, kept_u, pos_u, K=K,
-                                     p_ref=p_ref, z_ref=z_ref):
+                                     p_ref=p_ref, z_ref=z_ref,
+                                     report=report_notation):
         fig.add_trace(tr, row=1, col=1)
 
     # Row 2, col 1: grouped (or a placeholder annotation if missing).
@@ -745,7 +752,8 @@ def render_html(run_dir: Path, out_path: Path,
         for tr in _edge_traces(grouped_edges_g, pos_g, 'grouped'):
             fig.add_trace(tr, row=2, col=1)
         for tr in _node_traces_grouped(grouped_nodes, kept_g, pos_g, K=K,
-                                       p_ref=p_ref, z_ref=z_ref_g):
+                                       p_ref=p_ref, z_ref=z_ref_g,
+                                       report=report_notation):
             fig.add_trace(tr, row=2, col=1)
     else:
         # In a 2x2 grid the grouped panel is axis 'x3'/'y3' (third axis
@@ -759,7 +767,8 @@ def render_html(run_dir: Path, out_path: Path,
 
     # Row 1, col 2: ground-truth tree (spans both rows visually).
     if has_tree:
-        for tr in _tree_traces(tree_row, s=s, L=L, K=K):
+        for tr in _tree_traces(tree_row, s=s, L=L, K=K,
+                               report=report_notation):
             fig.add_trace(tr, row=1, col=2)
 
     # Axes / layout.
@@ -781,7 +790,9 @@ def render_html(run_dir: Path, out_path: Path,
             row=r, col=1,
             tickmode='array',
             tickvals=[-1] + list(range(K)) + [K],
-            ticktext=['embed'] + [f'layer {k}' for k in range(K)] + ['logit'],
+            ticktext=(['embed']
+                      + [sae_row_label(k, report_notation) for k in range(K)]
+                      + ['logit']),
             showgrid=True, gridcolor='#eeeeee',
         )
         fig.update_xaxes(
@@ -806,7 +817,10 @@ def render_html(run_dir: Path, out_path: Path,
             row=1, col=2,
             tickmode='array',
             tickvals=[K - (l * (K + 1.0) / L) for l in range(L + 1)],
-            ticktext=[f'level {l}' for l in range(L + 1)],
+            ticktext=[
+                f'level {report_level(l, L) if report_notation else l}'
+                for l in range(L + 1)
+            ],
             domain=[0.25, 0.75],
         )
         fig.update_xaxes(
@@ -848,6 +862,11 @@ def main():
     p.add_argument('--inline_js', action='store_true',
                    help='Embed plotly.js inline (larger file, works offline). '
                         'Default uses the CDN.')
+    p.add_argument('--report-notation', dest='report_notation',
+                   action='store_true',
+                   help='Relabel circuit y-axis as SAE k (1-based) and flip '
+                        'RHM-tree levels to bottom-up (leaves=0, root=L). '
+                        'Display only.')
     args = p.parse_args()
     run_dir = Path(args.run_dir)
     if not run_dir.is_dir():
@@ -859,6 +878,7 @@ def main():
         show_all_logits=args.show_all_logits,
         show_errors=not args.hide_errors,
         inline_js=args.inline_js,
+        report_notation=args.report_notation,
     )
     print(f'Wrote {final}')
 

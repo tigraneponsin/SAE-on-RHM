@@ -126,6 +126,15 @@ if [[ -n "${XLIM_MIN}" && -n "${XLIM_MAX}" ]]; then
     XLIM_ARGS+=(--xlim "${XLIM_MIN}" "${XLIM_MAX}")
 fi
 
+# REPORT_NOTATION=1 relabels every plot in report style (SAE k 1-based, bottom-up
+# RHM levels). Display only; no recompute. Default unset -> current behavior.
+REPORT_NOTATION="${REPORT_NOTATION:-0}"
+RN_ARGS=()
+if [[ "${REPORT_NOTATION}" == "1" ]]; then
+    RN_ARGS+=(--report-notation)
+fi
+echo "REPORT_NOTATION: ${REPORT_NOTATION}"
+
 CSV_PATH="${ANALYSIS_DIR}/sweep_metrics.csv"
 
 # -- Step 1: streaming eval (same call as run_analysis.sh) --------------------
@@ -157,7 +166,8 @@ set +e
 python "${REPO_DIR}/scripts/sae_sweep/plot_lambda_metrics.py" \
     --csv "${CSV_PATH}" \
     --outfile "${PLOTS_DIR}/lambda_metrics.png" \
-    ${XLIM_ARGS[@]+"${XLIM_ARGS[@]}"}
+    ${XLIM_ARGS[@]+"${XLIM_ARGS[@]}"} \
+    ${RN_ARGS[@]+"${RN_ARGS[@]}"}
 LAMBDA_EXIT=$?
 set -e
 
@@ -169,7 +179,8 @@ python "${REPO_DIR}/scripts/sae_sweep/plot_entropy_lambda.py" \
     --artifacts_dir "${ANALYSIS_DIR}" \
     --outfile_prefix "${PLOTS_DIR}/entropy_lambda" \
     --err_tolerance "${ERR_TOL}" \
-    ${XLIM_ARGS[@]+"${XLIM_ARGS[@]}"}
+    ${XLIM_ARGS[@]+"${XLIM_ARGS[@]}"} \
+    ${RN_ARGS[@]+"${RN_ARGS[@]}"}
 ENTROPY_EXIT=$?
 set -e
 

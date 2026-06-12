@@ -26,6 +26,7 @@ Usage:
 
 import argparse
 import csv
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -33,6 +34,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from notation import sae_label, add_report_flag
 
 
 # Per-position metric columns averaged / drawn per token.
@@ -88,7 +92,7 @@ def _average_positions(positions_data):
     return lam, stacked
 
 
-def _build_suptitle(by_layer, layers, tokens, agg):
+def _build_suptitle(by_layer, layers, tokens, agg, report=False):
     """Build a contextual figure title from mode and the token selection."""
     all_rows = [
         r for pos_map in by_layer.values()
@@ -98,9 +102,9 @@ def _build_suptitle(by_layer, layers, tokens, agg):
     mode_label = ','.join(modes)
 
     if len(layers) == 1:
-        layer_label = f'Layer {layers[0]}'
+        layer_label = sae_label(layers[0], report)
     else:
-        layer_label = f'Layers {",".join(str(l) for l in layers)}'
+        layer_label = ', '.join(sae_label(l, report) for l in layers)
 
     if tokens is None:
         tok_label = 'all tokens'
@@ -131,6 +135,7 @@ def main():
                         help='Lambda axis limits, e.g. --xlim 1e-2 1')
     parser.add_argument('--log-y', action='store_true',
                         help='Use log scale on the y-axis')
+    add_report_flag(parser)
     args = parser.parse_args()
 
     by_layer = _load_csv(args.csv, tokens=args.tokens)
@@ -147,7 +152,8 @@ def main():
     colors = plt.cm.tab10(np.linspace(0, 1, max(len(layers), 1)))
     layer_color = {l: colors[i] for i, l in enumerate(layers)}
 
-    suptitle = _build_suptitle(by_layer, layers, args.tokens, args.agg)
+    suptitle = _build_suptitle(by_layer, layers, args.tokens, args.agg,
+                               args.report_notation)
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 5))
     ax_ever = axes[0]
@@ -187,12 +193,14 @@ def main():
                 _series_for_position(pos_map[p], args.xlim) for p in positions
             ]
             lam, data = _average_positions(positions_data)
-            _plot_curves(lam, data, c, f'L{layer}')
+            _plot_curves(lam, data, c,
+                         sae_label(layer, args.report_notation, short=True))
         else:  # per_token
             shades = plt.cm.viridis(np.linspace(0.15, 0.85, max(len(positions), 1)))
             for shade, p in zip(shades, positions):
                 lam, data = _series_for_position(pos_map[p], args.xlim)
-                _plot_curves(lam, data, shade, f'L{layer} tok{p}')
+                _plot_curves(lam, data, shade,
+                             f'{sae_label(layer, args.report_notation, short=True)} tok{p}')
 
     # Threshold (linestyle) legend appended to both panels.
     for ax in (ax_ever, ax_mean):

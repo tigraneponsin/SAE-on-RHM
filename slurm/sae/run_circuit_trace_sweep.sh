@@ -277,13 +277,23 @@ set -e
 # -- Plot the sweep into an interactive HTML (visualize_sweep.py) -------------
 # Only if the trace sweep succeeded; a plot failure is reported but does not
 # mask the (successful) trace exit code. Writes <OUT_DIR>/sweep_circuit.html.
+# REPORT_NOTATION=1 relabels the circuit y-axis as SAE k (1-based) and flips the
+# RHM-tree levels to bottom-up (leaves=0, root=L). Display only; default unset.
+REPORT_NOTATION="${REPORT_NOTATION:-0}"
+RN_ARGS=()
+if [[ "${REPORT_NOTATION}" == "1" ]]; then
+    RN_ARGS+=(--report-notation)
+fi
+echo "REPORT_NOTATION: ${REPORT_NOTATION}"
+
 VIZ_EXIT=0
 if [[ ${EXIT_CODE} -eq 0 ]]; then
     echo ""
     echo "Plotting sweep -> ${OUT_DIR}/sweep_circuit.html"
     set +e
     srun python -m circuit_tracing.visualize_sweep \
-        --sweep_dir "${OUT_DIR}"
+        --sweep_dir "${OUT_DIR}" \
+        ${RN_ARGS[@]+"${RN_ARGS[@]}"}
     VIZ_EXIT=$?
     set -e
     if [[ ${VIZ_EXIT} -ne 0 ]]; then

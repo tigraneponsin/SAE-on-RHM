@@ -200,8 +200,11 @@ else
     XLIM_PASS=("" "")
 fi
 
+# Forward REPORT_NOTATION (if set) to the analysis+plots job so plots can be
+# rendered in report notation. Default unset -> plots use current notation.
 ANALYSIS_JOB_ID=$(sbatch --parsable \
     --dependency="afterok:${TRAIN_JOB_ID}" \
+    --export=ALL,REPORT_NOTATION="${REPORT_NOTATION:-}" \
     "${RUN_ANALYSIS_PLOTS}" \
     "${SWEEP_DIR}" \
     "${EVAL_SIZE}" \

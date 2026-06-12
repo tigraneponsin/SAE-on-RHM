@@ -34,6 +34,7 @@ from circuit_tracing.visualize_interactive import (
     _node_traces_ungrouped, _node_traces_grouped,
     _tree_traces,
 )
+from circuit_tracing.notation import sae_row_label, report_level
 
 
 def _subdir_name(node_th: float, edge_th: float) -> str:
@@ -112,7 +113,8 @@ _JS_SHIM = r"""
 def render_sweep_html(sweep_dir: Path, out_path: Path,
                       show_all_logits: bool = False,
                       show_errors: bool = True,
-                      inline_js: bool = False) -> Path:
+                      inline_js: bool = False,
+                      report_notation: bool = False) -> Path:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -166,7 +168,7 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
     # ---- Tree (shared, top-right, loaded from cell [0, 0]) ----
     first_subdir = sweep_dir / _subdir_name(node_thresholds[0], edge_thresholds[0])
     tree_row = torch.load(first_subdir / 'tree_for_input.pt', weights_only=False)
-    for tr in _tree_traces(tree_row, s=s, L=L, K=K):
+    for tr in _tree_traces(tree_row, s=s, L=L, K=K, report=report_notation):
         tr.meta = {'cell': 'shared'}
         tr.showlegend = False
         fig.add_trace(tr, row=1, col=2)
@@ -206,6 +208,7 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
                 fig.add_trace(tr, row=1, col=1)
             for tr in _node_traces_ungrouped(
                 nodes, kept_u, pos_u, K=K, p_ref=p_ref, z_ref=z_ref,
+                report=report_notation,
             ):
                 tr.meta = {'cell': [i, j]}
                 tr.visible = initial_visible
@@ -233,6 +236,7 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
                 fig.add_trace(tr, row=2, col=1)
             for tr in _node_traces_grouped(
                 g_nodes, kept_g, pos_g, K=K, p_ref=p_ref, z_ref=z_ref_g,
+                report=report_notation,
             ):
                 tr.meta = {'cell': [i, j]}
                 tr.visible = initial_visible
@@ -279,7 +283,9 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
             row=r, col=1,
             tickmode='array',
             tickvals=[-1] + list(range(K)) + [K],
-            ticktext=['embed'] + [f'layer {k_}' for k_ in range(K)] + ['logit'],
+            ticktext=(['embed']
+                      + [sae_row_label(k_, report_notation) for k_ in range(K)]
+                      + ['logit']),
             showgrid=True, gridcolor='#eeeeee',
         )
         fig.update_xaxes(
@@ -298,7 +304,10 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
         row=1, col=2,
         tickmode='array',
         tickvals=[K - (l * (K + 1.0) / L) for l in range(L + 1)],
-        ticktext=[f'level {l}' for l in range(L + 1)],
+        ticktext=[
+            f'level {report_level(l, L) if report_notation else l}'
+            for l in range(L + 1)
+        ],
     )
     fig.update_xaxes(
         row=1, col=2,
@@ -370,6 +379,11 @@ def main():
     p.add_argument('--hide_errors', action='store_true')
     p.add_argument('--inline_js', action='store_true',
                    help='Embed plotly.js inline (larger file, works offline).')
+    p.add_argument('--report-notation', dest='report_notation',
+                   action='store_true',
+                   help='Relabel circuit y-axis as SAE k (1-based) and flip '
+                        'RHM-tree levels to bottom-up (leaves=0, root=L). '
+                        'Display only.')
     args = p.parse_args()
 
     sweep_dir = Path(args.sweep_dir)
@@ -383,6 +397,7 @@ def main():
         show_all_logits=args.show_all_logits,
         show_errors=not args.hide_errors,
         inline_js=args.inline_js,
+        report_notation=args.report_notation,
     )
     print(f'Wrote {final}')
 

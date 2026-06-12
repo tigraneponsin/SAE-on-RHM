@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -22,6 +23,9 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from notation import sae_label, add_report_flag
 
 
 def main():
@@ -35,6 +39,7 @@ def main():
                         help='Output figure path (default: <artifacts_dir>/activation_histograms.png)')
     parser.add_argument('--bins', type=int, default=50,
                         help='Number of histogram bins (default: 50)')
+    add_report_flag(parser)
     args = parser.parse_args()
 
     artifacts_dir = Path(args.artifacts_dir)
@@ -101,7 +106,7 @@ def main():
         ax.set_xscale('log')
         ax.set_xlabel('Mean weighted activation', fontsize=11)
         ax.set_ylabel('Number of features', fontsize=11)
-        ax.set_title(f'Layer {layer}', fontsize=12)
+        ax.set_title(sae_label(layer, args.report_notation), fontsize=12)
         ax.grid(True, which='both', linestyle='--', linewidth=0.4, alpha=0.6)
 
     # Shared legend

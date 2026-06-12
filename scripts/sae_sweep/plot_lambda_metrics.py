@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import csv
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -22,6 +23,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from notation import sae_label, add_report_flag
 
 
 def _load_csv(path):
@@ -36,7 +40,7 @@ def _load_csv(path):
     return dict(by_layer)
 
 
-def _build_suptitle(by_layer, layers):
+def _build_suptitle(by_layer, layers, report=False):
     """Build a contextual figure title from mode/token_idx in the CSV rows."""
     all_rows = [r for rows in by_layer.values() for r in rows]
     modes = sorted(set(r.get('mode', 'all_tokens') for r in all_rows))
@@ -58,9 +62,9 @@ def _build_suptitle(by_layer, layers):
         mode_label = ','.join(modes)
 
     if len(layers) == 1:
-        layer_label = f'Layer {layers[0]}'
+        layer_label = sae_label(layers[0], report)
     else:
-        layer_label = f'Layers {",".join(str(l) for l in layers)}'
+        layer_label = ', '.join(sae_label(l, report) for l in layers)
 
     return f'SAE metrics vs lambda_1  |  {layer_label}  |  {mode_label}'
 
@@ -81,6 +85,7 @@ def main():
                              'panels (default: on)')
     parser.add_argument('--no-log-y', dest='log_y', action='store_false',
                         help='Use linear scale on the y-axis instead')
+    add_report_flag(parser)
     args = parser.parse_args()
 
     by_layer = _load_csv(args.csv)
@@ -90,7 +95,7 @@ def main():
     colors = plt.cm.tab10(np.linspace(0, 1, max(len(layers), 1)))
     layer_color = {l: colors[i] for i, l in enumerate(layers)}
 
-    suptitle = _build_suptitle(by_layer, layers)
+    suptitle = _build_suptitle(by_layer, layers, args.report_notation)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     ax_ever  = axes[0]
@@ -132,7 +137,8 @@ def main():
         ):
             ax_ever.plot(lam, vals, color=c, linestyle=ls, marker=mk,
                          markersize=4, linewidth=1.5,
-                         label=f'L{layer}' if ls == 'solid' else '_nolegend_')
+                         label=sae_label(layer, args.report_notation, short=True)
+                         if ls == 'solid' else '_nolegend_')
 
         # Panel 2: mean active — three thresholds
         for vals, (ls, mk, _) in zip(
@@ -140,10 +146,12 @@ def main():
         ):
             ax_mean.plot(lam, vals, color=c, linestyle=ls, marker=mk,
                          markersize=4, linewidth=1.5,
-                         label=f'L{layer}' if ls == 'solid' else '_nolegend_')
+                         label=sae_label(layer, args.report_notation, short=True)
+                         if ls == 'solid' else '_nolegend_')
 
         # Panel 3: normalized classification error
-        ax_class.plot(lam, norm_err, '-o', color=c, label=f'Layer {layer}', markersize=4)
+        ax_class.plot(lam, norm_err, '-o', color=c,
+                      label=sae_label(layer, args.report_notation), markersize=4)
 
     # Normalized baseline error reference line
     first_row = next(iter(by_layer.values()))[0]

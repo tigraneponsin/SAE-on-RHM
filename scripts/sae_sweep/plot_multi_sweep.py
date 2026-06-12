@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Reuse the curve loader from plot_loss_curves
 from plot_loss_curves import _load_curves, LOSS_LABELS
+from notation import sae_label, add_report_flag
 
 
 def _parse_args():
@@ -40,6 +41,7 @@ def _parse_args():
     p.add_argument('--max_steps', type=int, default=None)
     p.add_argument('--layer', type=str, default=None,
                    help='Comma-separated layers to plot (default: all found)')
+    add_report_flag(p)
     return p.parse_args()
 
 
@@ -121,7 +123,7 @@ def main():
             ax.set_xscale('log')
             ax.set_xlabel('Steps', fontsize=10)
             ax.set_ylabel(LOSS_LABELS[loss_key], fontsize=10)
-            ax.set_title(f'Layer {layer}', fontsize=11)
+            ax.set_title(sae_label(layer, args.report_notation), fontsize=11)
             ax.grid(True, which='both', linestyle='--', linewidth=0.4, alpha=0.6)
 
     # Deduplicated legend

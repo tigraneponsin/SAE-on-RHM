@@ -22,12 +22,16 @@ Usage:
 import argparse
 import csv
 import math
+import sys
 from collections import defaultdict
 from pathlib import Path
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from notation import sae_label, add_report_flag
 import numpy as np
 import torch
 
@@ -128,7 +132,8 @@ def _find_threshold_lambda(csv_path, layer, mode, tolerance):
     return None
 
 
-def _plot_meanpool_layer(layer, entries, outfile, xlim, threshold_lambda, tolerance):
+def _plot_meanpool_layer(layer, entries, outfile, xlim, threshold_lambda, tolerance,
+                         report=False):
     """Single-panel plot for mean_pooled artifacts.
 
     Mean_pooled SAEs have one entropy value per artifact (P=1), already
@@ -158,7 +163,7 @@ def _plot_meanpool_layer(layer, entries, outfile, xlim, threshold_lambda, tolera
                    label=f'err thresh ({tolerance:.0%}): {threshold_lambda:.3g}')
     ax.legend(fontsize=10)
     fig.suptitle(
-        f'Normalized entropy vs lambda_1 | layer {layer} | '
+        f'Normalized entropy vs lambda_1 | {sae_label(layer, report)} | '
         f'mode=mean_pooled | s={s}, L={L}',
         fontsize=11, y=0.99,
     )
@@ -171,7 +176,8 @@ def _plot_meanpool_layer(layer, entries, outfile, xlim, threshold_lambda, tolera
           f'-> {outfile}')
 
 
-def _plot_layer(layer, entries, outfile, xlim, threshold_lambda, tolerance):
+def _plot_layer(layer, entries, outfile, xlim, threshold_lambda, tolerance,
+                report=False):
     s_vals = {e['s'] for e in entries}
     L_vals = {e['L'] for e in entries}
     if len(s_vals) > 1 or len(L_vals) > 1:
@@ -245,7 +251,7 @@ def _plot_layer(layer, entries, outfile, xlim, threshold_lambda, tolerance):
     modes = sorted({e['mode'] for e in entries if e['mode']})
     mode_str = modes[0] if len(modes) == 1 else ','.join(modes)
     fig.suptitle(
-        f'Normalized entropy vs lambda_1 | layer {layer} | '
+        f'Normalized entropy vs lambda_1 | {sae_label(layer, report)} | '
         f'mode={mode_str} | s={s}, L={L}',
         fontsize=12, y=1.0,
     )
@@ -285,6 +291,7 @@ def main():
     parser.add_argument('--err_tolerance', type=float, default=0.01,
                         help='Additive tolerance on (norm_err - baseline_err) '
                              'used to define the threshold lambda. Default: 0.01.')
+    add_report_flag(parser)
     args = parser.parse_args()
 
     artifacts_dir = Path(args.artifacts_dir)
@@ -328,11 +335,13 @@ def main():
         if is_meanpool:
             outfile = f'{prefix}_layer{layer}_meanpool.png'
             _plot_meanpool_layer(layer, layer_entries, outfile, args.xlim,
-                                 threshold_lambda, args.err_tolerance)
+                                 threshold_lambda, args.err_tolerance,
+                                 args.report_notation)
         else:
             outfile = f'{prefix}_layer{layer}.png'
             _plot_layer(layer, layer_entries, outfile, args.xlim,
-                        threshold_lambda, args.err_tolerance)
+                        threshold_lambda, args.err_tolerance,
+                        args.report_notation)
 
 
 if __name__ == '__main__':

@@ -34,6 +34,9 @@ import matplotlib.cm as cm
 import numpy as np
 import torch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from notation import sae_label, add_report_flag
+
 
 # ---------------------------------------------------------------------------
 # Checkpoint loading (curves only — no SAE weights needed)
@@ -124,27 +127,32 @@ COLOR_BY_LABELS = {
 }
 
 
-def _format_val(color_by: str, val) -> str:
-    """Format a parameter value for the legend label."""
-    if color_by == 'lr':
-        return f'lr={val:.0e}'
-    if color_by == 'lambda_l1':
-        return f'λ₁={val:.3g}'
-    if color_by in ('batch_size', 'steps', 'train_size'):
-        return f'{color_by}={int(val)}'
-    return f'{color_by}={val}'
-
-
 def plot_curves(records, loss_types, max_steps, outfile, color_by='lr',
-               yscale='log'):
+               yscale='log', report_notation=False):
+    import matplotlib.colors as mcolors
+
     layers   = sorted({r['layer'] for r in records})
     all_vals = sorted({r[color_by] for r in records})
 
     n_rows = len(layers)
     n_cols = len(loss_types)
 
-    cmap = cm.get_cmap('viridis', max(len(all_vals), 1))
-    val_color = {v: cmap(i) for i, v in enumerate(all_vals)}
+    # Continuous color scale over the color_by range, shown as a single colorbar
+    # instead of a per-value legend. Log scale for the multiplicative axes
+    # (lambda_1, lr); linear otherwise. A degenerate (single-value or
+    # non-positive-for-log) range falls back to a linear norm over [min, max].
+    cmap = cm.get_cmap('viridis')
+    vmin, vmax = (min(all_vals), max(all_vals)) if all_vals else (0.0, 1.0)
+    log_scale = color_by in ('lambda_l1', 'lr') and vmin > 0 and vmax > vmin
+    if log_scale:
+        norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
+    elif vmax > vmin:
+        norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+    else:
+        norm = mcolors.Normalize(vmin=vmin - 0.5, vmax=vmin + 0.5)
+
+    def val_color(v):
+        return cmap(norm(v))
 
     fig, axes = plt.subplots(
         n_rows, n_cols,
@@ -176,9 +184,8 @@ def plot_curves(records, loss_types, max_steps, outfile, color_by='lr',
 
                 ax.plot(
                     steps, vals,
-                    color=val_color[r[color_by]],
+                    color=val_color(r[color_by]),
                     linewidth=1.5,
-                    label=_format_val(color_by, r[color_by]),
                 )
                 if len(vals):
                     all_vals_plotted.append(vals)
@@ -196,46 +203,32 @@ def plot_curves(records, loss_types, max_steps, outfile, color_by='lr',
             ax.set_xscale('log')
             ax.set_xlabel('Steps', fontsize=10)
             ax.set_ylabel(LOSS_LABELS[loss_key], fontsize=10)
-
-            mode_tag = layer_records[0]['mode'] if layer_records else ''
-            if mode_tag == 'one_token':
-                tok = layer_records[0]['token_idx']
-                mode_tag = f'one_token (tok {tok})'
-            ax.set_title(f'Layer {layer} — {mode_tag}', fontsize=11)
+            ax.set_title(LOSS_LABELS[loss_key], fontsize=11)
 
             ax.grid(True, which='both', linestyle='--', linewidth=0.4, alpha=0.6)
 
-    # Single shared legend — deduplicate labels
-    handles_seen = {}
-    for ax_row in axes:
-        for ax in ax_row:
-            for h, l in zip(*ax.get_legend_handles_labels()):
-                handles_seen[l] = h
+    # Single shared colorbar over the color_by range (replaces the per-value
+    # legend). The ScalarMappable carries the same cmap/norm used for the lines.
+    plt.tight_layout(rect=[0, 0.06, 1, 0.96])
 
-    sorted_labels = sorted(handles_seen.keys(),
-                           key=lambda s: float(s.split('=')[-1]))
-    sorted_handles = [handles_seen[l] for l in sorted_labels]
-
-    legend_title = COLOR_BY_LABELS.get(color_by, color_by)
-    n_legend_cols = min(len(all_vals), 9)
-    n_legend_rows = max(1, -(-len(all_vals) // n_legend_cols))  # ceil division
-    bottom_pad = 0.03 + 0.055 * n_legend_rows  # reserve space proportional to legend height
-
-    plt.tight_layout(rect=[0, bottom_pad, 1, 0.96])
-
-    fig.legend(
-        sorted_handles, sorted_labels,
-        title=legend_title,
-        loc='lower center',
-        ncol=n_legend_cols,
-        bbox_to_anchor=(0.5, 0),
-        fontsize=9,
+    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+    cbar_label = COLOR_BY_LABELS.get(color_by, color_by)
+    cbar = fig.colorbar(
+        sm, ax=axes.ravel().tolist(),
+        orientation='horizontal',
+        fraction=0.05, pad=0.12, aspect=40,
     )
+    cbar.set_label(cbar_label, fontsize=10)
 
-    curve_sources = sorted({r.get('curve_source', '?') for r in records})
-    source_str    = ' / '.join(curve_sources)
+    # Suptitle: name the SAE(s) by index. One sweep dir is usually a single SAE.
+    if len(layers) == 1:
+        sae_str = f' — {sae_label(layers[0], report_notation)}'
+    else:
+        sae_str = ' — ' + ', '.join(
+            sae_label(l, report_notation) for l in layers)
     fig.suptitle(
-        f'SAE loss curves [{source_str}]',
+        f'SAE Loss curves{sae_str}',
         fontsize=13, y=0.99,
     )
 
@@ -267,6 +260,7 @@ def _parse_args():
                    help=f'Parameter to color lines by (default: {DEFAULT_COLOR_BY})')
     p.add_argument('--yscale', type=str, default='log', choices=['linear', 'log'],
                    help='Y-axis scale for loss plots (default: linear)')
+    add_report_flag(p)
     return p.parse_args()
 
 
@@ -312,7 +306,7 @@ def main():
     print(f'Checkpoints plotted: {len(records)}')
 
     plot_curves(records, loss_types, max_steps, outfile, color_by=color_by,
-                yscale=args.yscale)
+                yscale=args.yscale, report_notation=args.report_notation)
 
 
 if __name__ == '__main__':
