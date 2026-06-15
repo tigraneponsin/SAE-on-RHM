@@ -30,6 +30,7 @@
 #   --dedupe 0|1      [1]
 #   --xlim MIN MAX    [none]    lambda-axis limits shared by both plots
 #   --err_tolerance F [0.01]    entropy threshold tolerance
+#   --plot_avg        [off]     add "avg over positions" panel to entropy plots
 #
 # Examples:
 #   bash slurm/sae/run_full_sweep.sh \
@@ -60,6 +61,7 @@ DEDUPE=1
 XLIM_MIN=""
 XLIM_MAX=""
 ERR_TOL=0.01
+PLOT_AVG=0
 GEN_ARGS=()
 DO_GEN=0
 
@@ -68,7 +70,7 @@ usage() {
 Usage: bash slurm/sae/run_full_sweep.sh
          (--sweep_configs PATH | --sweep_dir PATH | --gen <generate_sweep.py args>)
          [--eval_size N] [--batch_size N] [--device D] [--dedupe 0|1]
-         [--xlim MIN MAX] [--err_tolerance F]
+         [--xlim MIN MAX] [--err_tolerance F] [--plot_avg]
 
 Point it at a sweep in one of three ways:
   --sweep_configs PATH   path to an existing sweep_configs.json
@@ -91,6 +93,7 @@ while [[ $# -gt 0 ]]; do
         --dedupe)         DEDUPE=$2;        shift 2 ;;
         --xlim)           XLIM_MIN=$2; XLIM_MAX=$3; shift 3 ;;
         --err_tolerance)  ERR_TOL=$2;       shift 2 ;;
+        --plot_avg)       PLOT_AVG=1;        shift   ;;
         --gen)
             DO_GEN=1
             shift
@@ -177,7 +180,7 @@ echo "  SWEEP_CONFIGS: ${SWEEP_CONFIGS}"
 echo "  SWEEP_DIR:     ${SWEEP_DIR}"
 echo "  configs (N):   ${N}  -> --array=${ARRAY_RANGE}"
 echo "  eval_size=${EVAL_SIZE} batch_size=${BATCH_SIZE} device=${DEVICE} dedupe=${DEDUPE}"
-echo "  xlim=${XLIM_MIN:-<none>} ${XLIM_MAX:-<none>}  err_tolerance=${ERR_TOL}"
+echo "  xlim=${XLIM_MIN:-<none>} ${XLIM_MAX:-<none>}  err_tolerance=${ERR_TOL}  plot_avg=${PLOT_AVG}"
 echo "======================================================================"
 
 # -- Step 1: submit the training array ----------------------------------------
@@ -204,7 +207,7 @@ fi
 # rendered in report notation. Default unset -> plots use current notation.
 ANALYSIS_JOB_ID=$(sbatch --parsable \
     --dependency="afterok:${TRAIN_JOB_ID}" \
-    --export=ALL,REPORT_NOTATION="${REPORT_NOTATION:-}" \
+    --export=ALL,REPORT_NOTATION="${REPORT_NOTATION:-}",PLOT_AVG="${PLOT_AVG}" \
     "${RUN_ANALYSIS_PLOTS}" \
     "${SWEEP_DIR}" \
     "${EVAL_SIZE}" \
@@ -219,6 +222,6 @@ echo "Submitted analysis+plots: job ${ANALYSIS_JOB_ID} (afterok:${TRAIN_JOB_ID})
 echo ""
 echo "Outputs when complete:"
 echo "  ${SWEEP_DIR}/analysis_files/   (sweep_metrics.csv, *.sae_eval.pt)"
-echo "  ${SWEEP_DIR}/analysis_plots/   (lambda_metrics.png, entropy_lambda_layer*.png)"
+echo "  ${SWEEP_DIR}/analysis_plots/   (lambda_metrics.png, entropy_lambda_layer*.png, min_entropy_diag_*.png)"
 echo ""
 echo "Track with:  squeue -j ${TRAIN_JOB_ID},${ANALYSIS_JOB_ID}"

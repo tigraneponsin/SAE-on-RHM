@@ -4,10 +4,11 @@
 # for one sweep directory, in a single job.
 #
 # This is a superset of run_analysis.sh: it runs the same streaming eval, then
-# additionally calls plot_lambda_metrics.py and plot_entropy_lambda.py. Outputs
-# land in two fixed subfolders of the sweep dir:
+# additionally calls plot_lambda_metrics.py, plot_entropy_lambda.py, and
+# min_entropy_diag.py. Outputs land in two fixed subfolders of the sweep dir:
 #   <SWEEP_DIR>/analysis_files/   -- *.sae_eval.pt, sweep_metrics.csv, csvs
-#   <SWEEP_DIR>/analysis_plots/   -- lambda_metrics.png, entropy_lambda_layer*.png
+#   <SWEEP_DIR>/analysis_plots/   -- lambda_metrics.png, entropy_lambda_layer*.png,
+#                                    min_entropy_diag_*.png
 #
 # run_analysis.sh and the plot scripts remain usable standalone; this script is
 # an extra convenience (and the dependent step submitted by run_full_sweep.sh).
@@ -135,6 +136,15 @@ if [[ "${REPORT_NOTATION}" == "1" ]]; then
 fi
 echo "REPORT_NOTATION: ${REPORT_NOTATION}"
 
+# PLOT_AVG=1 adds an extra "avg over positions" panel to the entropy plots.
+# Default unset -> per-position panels only (4 per row).
+PLOT_AVG="${PLOT_AVG:-0}"
+PLOT_AVG_ARGS=()
+if [[ "${PLOT_AVG}" == "1" ]]; then
+    PLOT_AVG_ARGS+=(--plot_avg)
+fi
+echo "PLOT_AVG: ${PLOT_AVG}"
+
 CSV_PATH="${ANALYSIS_DIR}/sweep_metrics.csv"
 
 # -- Step 1: streaming eval (same call as run_analysis.sh) --------------------
@@ -173,15 +183,31 @@ set -e
 
 # -- Step 3: entropy vs lambda plots (one per layer) --------------------------
 echo ""
-echo "[3/3] Entropy-lambda plots -> ${PLOTS_DIR}/entropy_lambda_layer*.png"
+echo "[3/4] Entropy-lambda plots -> ${PLOTS_DIR}/entropy_lambda_layer*.png"
 set +e
 python "${REPO_DIR}/scripts/sae_sweep/plot_entropy_lambda.py" \
     --artifacts_dir "${ANALYSIS_DIR}" \
     --outfile_prefix "${PLOTS_DIR}/entropy_lambda" \
     --err_tolerance "${ERR_TOL}" \
     ${XLIM_ARGS[@]+"${XLIM_ARGS[@]}"} \
-    ${RN_ARGS[@]+"${RN_ARGS[@]}"}
+    ${RN_ARGS[@]+"${RN_ARGS[@]}"} \
+    ${PLOT_AVG_ARGS[@]+"${PLOT_AVG_ARGS[@]}"}
 ENTROPY_EXIT=$?
+set -e
+
+# -- Step 4: min-entropy subtree-alignment diagnostic -------------------------
+echo ""
+echo "[4/4] Min-entropy diag -> ${PLOTS_DIR}/min_entropy_diag_*.png"
+set +e
+python "${REPO_DIR}/scripts/sae_sweep/min_entropy_diag.py" \
+    --artifacts_dir "${ANALYSIS_DIR}" \
+    --out_plot_prefix "${PLOTS_DIR}/min_entropy_diag" \
+    --csv_path "${CSV_PATH}" \
+    --err_tolerance "${ERR_TOL}" \
+    ${XLIM_ARGS[@]+"${XLIM_ARGS[@]}"} \
+    ${RN_ARGS[@]+"${RN_ARGS[@]}"} \
+    ${PLOT_AVG_ARGS[@]+"${PLOT_AVG_ARGS[@]}"}
+MINENT_EXIT=$?
 set -e
 
 END_EPOCH=$(date +%s)
@@ -194,11 +220,12 @@ ELAPSED_S=$((ELAPSED_SEC % 60))
 echo ""
 echo "END:         ${END_HUMAN}"
 printf 'ELAPSED:     %02d:%02d:%02d (%ds)\n' "${ELAPSED_H}" "${ELAPSED_M}" "${ELAPSED_S}" "${ELAPSED_SEC}"
-echo "eval exit=${EVAL_EXIT}  lambda_plot exit=${LAMBDA_EXIT}  entropy_plot exit=${ENTROPY_EXIT}"
+echo "eval exit=${EVAL_EXIT}  lambda_plot exit=${LAMBDA_EXIT}  entropy_plot exit=${ENTROPY_EXIT}  minent_diag exit=${MINENT_EXIT}"
 
 # Eval already succeeded above; surface a nonzero exit if any plot failed.
 FINAL_EXIT=0
 [[ ${LAMBDA_EXIT} -ne 0 ]] && FINAL_EXIT=${LAMBDA_EXIT}
 [[ ${ENTROPY_EXIT} -ne 0 ]] && FINAL_EXIT=${ENTROPY_EXIT}
+[[ ${MINENT_EXIT} -ne 0 ]] && FINAL_EXIT=${MINENT_EXIT}
 echo "Analysis+plots finished with exit code ${FINAL_EXIT}."
 exit ${FINAL_EXIT}

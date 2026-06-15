@@ -2,12 +2,12 @@
 .sae_eval.pt artifacts.
 
 For each transformer layer found in the artifacts directory, produces a
-figure with s^L + 1 subplots:
-  - The first s^L subplots show, for each leaf position p, the three
+figure with s^L subplots (4 per row by default):
+  - Each of the s^L subplots shows, for one leaf position p, the three
     normalized entropy aggregates H_bar_{fire,raw,dec}_norm[p] as a
     function of lambda_l1.
-  - The last subplot shows the same three curves averaged over all leaf
-    positions (nanmean).
+  - With --plot_avg, an extra final subplot shows the same three curves
+    averaged over all leaf positions (nanmean). Off by default.
 
 Input: a directory of *.sae_eval.pt artifacts produced by
 scripts/sae_eval/run.py with --with-entropy (or --with-all).
@@ -177,7 +177,7 @@ def _plot_meanpool_layer(layer, entries, outfile, xlim, threshold_lambda, tolera
 
 
 def _plot_layer(layer, entries, outfile, xlim, threshold_lambda, tolerance,
-                report=False):
+                report=False, plot_avg=False):
     s_vals = {e['s'] for e in entries}
     L_vals = {e['L'] for e in entries}
     if len(s_vals) > 1 or len(L_vals) > 1:
@@ -195,9 +195,10 @@ def _plot_layer(layer, entries, outfile, xlim, threshold_lambda, tolerance,
     mats = {k: _build_matrix(entries, k, num_positions)
             for k in ('H_fire', 'H_raw', 'H_dec')}
 
-    total_panels = num_positions + 1
-    nrows = max(1, int(math.ceil(math.sqrt(total_panels))))
-    ncols = int(math.ceil(total_panels / nrows))
+    total_panels = num_positions + (1 if plot_avg else 0)
+    # Default to 4 panels per line; only narrow when there are fewer panels.
+    ncols = min(4, total_panels)
+    nrows = max(1, int(math.ceil(total_panels / ncols)))
 
     fig, axes = plt.subplots(
         nrows, ncols,
@@ -223,24 +224,25 @@ def _plot_layer(layer, entries, outfile, xlim, threshold_lambda, tolerance,
             ax.axvline(threshold_lambda, color='red', linestyle='--',
                        linewidth=0.8, alpha=0.7)
 
-    ax_agg = axes_flat[num_positions]
-    for key, label, color in zip(ENTROPY_KEYS, ENTROPY_LABELS, ENTROPY_COLORS):
-        short = key.replace('H_bar_', '').replace('_norm', '')
-        y = np.nanmean(mats[f'H_{short}'], axis=1)
-        ax_agg.plot(lambdas, y, '-o', color=color, label=label,
-                    markersize=3, linewidth=1.2)
-    ax_agg.set_title('mean over positions', fontsize=9, fontweight='bold')
-    ax_agg.set_xscale('log')
-    ax_agg.set_ylim(-0.05, 1.05)
-    ax_agg.grid(True, which='both', linestyle='--', linewidth=0.3, alpha=0.5)
-    if xlim is not None:
-        ax_agg.set_xlim(xlim[0], xlim[1])
-    if threshold_lambda is not None:
-        ax_agg.axvline(threshold_lambda, color='red', linestyle='--',
-                       linewidth=1.0, alpha=0.8,
-                       label=f'err thresh ({tolerance:.0%}): {threshold_lambda:.3g}')
+    if plot_avg:
+        ax_agg = axes_flat[num_positions]
+        for key, label, color in zip(ENTROPY_KEYS, ENTROPY_LABELS, ENTROPY_COLORS):
+            short = key.replace('H_bar_', '').replace('_norm', '')
+            y = np.nanmean(mats[f'H_{short}'], axis=1)
+            ax_agg.plot(lambdas, y, '-o', color=color, label=label,
+                        markersize=3, linewidth=1.2)
+        ax_agg.set_title('mean over positions', fontsize=9, fontweight='bold')
+        ax_agg.set_xscale('log')
+        ax_agg.set_ylim(-0.05, 1.05)
+        ax_agg.grid(True, which='both', linestyle='--', linewidth=0.3, alpha=0.5)
+        if xlim is not None:
+            ax_agg.set_xlim(xlim[0], xlim[1])
+        if threshold_lambda is not None:
+            ax_agg.axvline(threshold_lambda, color='red', linestyle='--',
+                           linewidth=1.0, alpha=0.8,
+                           label=f'err thresh ({tolerance:.0%}): {threshold_lambda:.3g}')
 
-    for j in range(num_positions + 1, len(axes_flat)):
+    for j in range(total_panels, len(axes_flat)):
         axes_flat[j].axis('off')
 
     for ax in axes[-1, :]:
@@ -256,7 +258,13 @@ def _plot_layer(layer, entries, outfile, xlim, threshold_lambda, tolerance,
         fontsize=12, y=1.0,
     )
 
-    handles, labels = ax_agg.get_legend_handles_labels()
+    # Legend from a per-position panel (always present); add the threshold
+    # line proxy here so it shows regardless of whether the avg panel exists.
+    handles, labels = axes_flat[0].get_legend_handles_labels()
+    if threshold_lambda is not None:
+        handles.append(plt.Line2D([], [], color='red', linestyle='--',
+                                  linewidth=1.0))
+        labels.append(f'err thresh ({tolerance:.0%}): {threshold_lambda:.3g}')
     fig.legend(handles, labels, loc='lower center',
                ncol=len(labels), bbox_to_anchor=(0.5, -0.02), fontsize=10)
 
@@ -291,6 +299,9 @@ def main():
     parser.add_argument('--err_tolerance', type=float, default=0.01,
                         help='Additive tolerance on (norm_err - baseline_err) '
                              'used to define the threshold lambda. Default: 0.01.')
+    parser.add_argument('--plot_avg', action='store_true',
+                        help='Add an extra "mean over positions" panel. Off by '
+                             'default (per-position panels only).')
     add_report_flag(parser)
     args = parser.parse_args()
 
@@ -341,7 +352,7 @@ def main():
             outfile = f'{prefix}_layer{layer}.png'
             _plot_layer(layer, layer_entries, outfile, args.xlim,
                         threshold_lambda, args.err_tolerance,
-                        args.report_notation)
+                        args.report_notation, args.plot_avg)
 
 
 if __name__ == '__main__':
