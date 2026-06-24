@@ -110,10 +110,10 @@ v=8
 L=4
 m=8
 batch_size=256
-P=524288
+P=1048576
 lr=0.001
 DROPOUT=0.1
 wd=0.0001
-for MODEL in transformer_freeclass transformer_freeclass_nores; do
+for MODEL in transformer_meanclass; do
     sbatch slurm/transformer/Sbatch_trsf_for_SAE.sh "$P" "$v" "$L" "$m" "$batch_size" "" "" "$lr" "" "" "$DROPOUT" "" "$wd" "" "" "" "" "$MODEL"
 done

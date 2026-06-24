@@ -109,7 +109,13 @@ def process_artifact(art, candidates='same_level'):
     s = int(rhm['s'])
     L = int(rhm['L'])
     layer_id = int(art['layer_id'])
-    matched_level = L - 1 - layer_id
+
+    # mean_pooled SAEs have a single pooled readout (P=1, token_positions=[-1])
+    # with no per-token parent. We treat the root class (level 0) as its parent
+    # (as plot_entropy_lambda does), drop the per-token level/leak machinery,
+    # and keep the parent(root) + whole-tree min curves and the level dist.
+    pooled = (art.get('mode') == 'mean_pooled')
+    matched_level = 0 if pooled else (L - 1 - layer_id)
 
     index_layout = art['index_layout']
     H_per_feature = art['H_per_feature']          # [num_groups, P, F]
@@ -158,7 +164,7 @@ def process_artifact(art, candidates='same_level'):
     out = {
         'lambda_l1': float(art.get('lambda_l1') or 0.0),
         'layer_id': layer_id, 'P': P, 's': s, 'L': L,
-        'mode': art.get('mode', ''),
+        'mode': art.get('mode', ''), 'pooled': pooled,
         'matched_level': matched_level,
         'positions': [], 'parent_group': [],
         'stored_H_bar_fire': [],
@@ -181,8 +187,13 @@ def process_artifact(art, candidates='same_level'):
 
     for p_idx in range(P):
         p_real = int(token_positions[p_idx].item())
-        matched_j = p_real // (s ** (1 + layer_id))
-        parent_key = (matched_level, matched_j)
+        # pooled readout has no per-token parent -> use the root class (0,0);
+        # per-token modes resolve the matched-level ancestor of this position.
+        if pooled:
+            parent_key = (0, 0)
+        else:
+            matched_j = p_real // (s ** (1 + layer_id))
+            parent_key = (matched_level, matched_j)
         parent_gidx = group_index.get(parent_key)
         out['positions'].append(p_real)
         out['parent_group'].append(parent_key)
@@ -429,8 +440,9 @@ def make_level_dist_plot(diags, out_prefix, scheme='fire', xlim=None,
                      '#000000')  # black
     level_color = {lvl: LEVEL_PALETTE[i % len(LEVEL_PALETTE)]
                    for i, lvl in enumerate(levels)}
+    pooled = diags_sorted[0][1].get('pooled', False)
 
-    ncol = 4
+    ncol = min(4, P)                     # compact single-panel fig when pooled
     nrow = math.ceil(P / ncol)
     fig, axes = plt.subplots(nrow, ncol, figsize=(4 * ncol, 3 * nrow),
                              squeeze=False)
@@ -465,7 +477,9 @@ def make_level_dist_plot(diags, out_prefix, scheme='fire', xlim=None,
             ax.axvline(threshold_lambda, color='black', linestyle='--',
                        linewidth=0.8, alpha=0.7,
                        label=(_thr_label(tolerance) if p_idx == 0 else None))
-        ax.set_title('pos %d (parent %d,%d)' % (p_idx, _lvl(pg[0]), pg[1]),
+        ax.set_title('pooled readout (root %d,%d)' % (_lvl(pg[0]), pg[1])
+                     if pooled
+                     else 'pos %d (parent %d,%d)' % (p_idx, _lvl(pg[0]), pg[1]),
                      fontsize=9)
         ax.set_xlabel(r'$\lambda$', fontsize=12)
         ax.set_ylabel('share', fontsize=12)
@@ -502,20 +516,27 @@ def make_plot(diags, out_prefix, scheme='fire', xlim=None, report=False,
 
     def _lvl(code_level):
         return report_level(code_level, L) if report else code_level
-    ncol = 4
     total_panels = P + (1 if plot_avg else 0)
+    ncol = min(4, total_panels)          # don't pad a 1-panel pooled fig to 4
     nrow = math.ceil(total_panels / ncol)
     fig, axes = plt.subplots(nrow, ncol, figsize=(4 * ncol, 3 * nrow),
                              squeeze=False)
     axes = axes.flatten()
 
+    pooled = diags_sorted[0][1].get('pooled', False)
     par_key = 'H_bar_%s_norm' % scheme
     same_key = 'H_bar_min_%s_same_level_norm' % scheme
     whole_key = 'H_bar_min_%s_whole_tree_norm' % scheme
-    # (style, color, label) for the three curves
-    curves = [(par_key, 'o-', 'C0', 'parent constrained'),
-              (same_key, 's-', 'C3', 'level constrained'),
-              (whole_key, 'D-', 'C1', 'no constraint')]
+    # (style, color, label) for the curves. For pooled SAEs the parent IS the
+    # root class and the same-level set collapses to {root}, so the
+    # level-constrained curve duplicates the parent curve -> drop it.
+    if pooled:
+        curves = [(par_key, 'o-', 'C0', 'root constrained'),
+                  (whole_key, 'D-', 'C1', 'no constraint')]
+    else:
+        curves = [(par_key, 'o-', 'C0', 'parent constrained'),
+                  (same_key, 's-', 'C3', 'level constrained'),
+                  (whole_key, 'D-', 'C1', 'no constraint')]
 
     for p_idx in range(P):
         ax = axes[p_idx]
@@ -530,7 +551,10 @@ def make_plot(diags, out_prefix, scheme='fire', xlim=None, report=False,
             ax.axvline(threshold_lambda, color='black', linestyle='--',
                        linewidth=0.8, alpha=0.7,
                        label=(_thr_label(tolerance) if p_idx == 0 else None))
-        ax.set_title('pos %d (parent %d,%d)' % (p_idx, _lvl(pg[0]), pg[1]), fontsize=9)
+        ax.set_title('pooled readout (root %d,%d)' % (_lvl(pg[0]), pg[1])
+                     if pooled
+                     else 'pos %d (parent %d,%d)' % (p_idx, _lvl(pg[0]), pg[1]),
+                     fontsize=9)
         ax.set_xlabel(r'$\lambda$', fontsize=12)
         ax.set_ylabel('H_norm', fontsize=12)
         if p_idx == 0:
@@ -612,7 +636,6 @@ def main():
 
     diags = []
     skipped = []
-    skipped_pooled = []
     for f in files:
         art = torch.load(f, map_location='cpu', weights_only=False)
         needed = ('H_per_feature', 'index_layout', 'firing_rate',
@@ -621,23 +644,16 @@ def main():
         if any(k not in art or art[k] is None for k in needed):
             skipped.append(f.name)
             continue
-        # mean_pooled SAEs have a single pooled readout (P=1, token_positions
-        # = [-1]) conditioned on the root class, not per-token latents. The
-        # per-position parent/level/leak diagnostics do not apply; skip them
-        # (plot_entropy_lambda handles mean_pooled separately).
-        if art.get('mode') == 'mean_pooled':
-            skipped_pooled.append(f.name)
-            continue
+        # mean_pooled SAEs (single pooled readout, root-class parent) are
+        # handled by process_artifact's pooled branch: parent=root, no
+        # per-token level/leak machinery, whole-tree min + level dist only.
         d = process_artifact(art, candidates=args.candidates)
         sanity_check(art, d)
         diags.append((f.name, d))
 
-    if skipped_pooled:
-        print('skipped %d mean_pooled artifacts (per-token diagnostic does not '
-              'apply)' % len(skipped_pooled))
     if not diags:
-        raise SystemExit('no usable artifacts (skipped %d missing keys, %d '
-                         'mean_pooled)' % (len(skipped), len(skipped_pooled)))
+        raise SystemExit('no usable artifacts (skipped %d missing keys)'
+                         % len(skipped))
 
     write_csv(out_csv, diags)
     print('wrote %s (%d artifacts x %d positions)'

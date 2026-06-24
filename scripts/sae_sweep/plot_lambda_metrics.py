@@ -1,12 +1,9 @@
-"""Plot SAE quality metrics as a function of lambda_1.
+"""Plot SAE quality metrics as a function of lambda.
 
 Reads the CSV produced by scripts/sae_eval/run.py and plots three panels:
-  1. Ever-active features: binary (>0), >1% of max mean, >10% of max mean
-  2. Mean active features per token: binary (>0), >1% of token max, >10% of token max
+  1. Ever-active features: binary (>0)
+  2. Mean active features per token: binary (>0)
   3. Classification error (with baseline reference)
-
-Within panels 1 and 2, the three thresholds are shown with different
-linestyles (solid / dashed / dotted) and the same color per layer.
 
 Usage:
     python sae_sweep/plot_lambda_metrics.py \
@@ -42,6 +39,14 @@ def _load_csv(path):
 
 def _build_suptitle(by_layer, layers, report=False):
     """Build a contextual figure title from mode/token_idx in the CSV rows."""
+    if len(layers) == 1:
+        layer_label = sae_label(layers[0], report)
+    else:
+        layer_label = ', '.join(sae_label(l, report) for l in layers)
+
+    if report:
+        return rf'SAE metrics vs $\lambda$  |  {layer_label}'
+
     all_rows = [r for rows in by_layer.values() for r in rows]
     modes = sorted(set(r.get('mode', 'all_tokens') for r in all_rows))
     token_idxs = sorted(set(
@@ -61,12 +66,7 @@ def _build_suptitle(by_layer, layers, report=False):
     else:
         mode_label = ','.join(modes)
 
-    if len(layers) == 1:
-        layer_label = sae_label(layers[0], report)
-    else:
-        layer_label = ', '.join(sae_label(l, report) for l in layers)
-
-    return f'SAE metrics vs lambda_1  |  {layer_label}  |  {mode_label}'
+    return rf'SAE metrics vs $\lambda$  |  {layer_label}  |  {mode_label}'
 
 
 def main():
@@ -97,17 +97,10 @@ def main():
 
     suptitle = _build_suptitle(by_layer, layers, args.report_notation)
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5.25))
     ax_ever  = axes[0]
     ax_mean  = axes[1]
     ax_class = axes[2]
-
-    # Linestyle legend entries (drawn once, outside the layer loop)
-    thresh_styles = [
-        ('solid',  'o', '>0 (all active)'),
-        ('dashed', 's', '>1% of max'),
-        ('dotted', '^', '>10% of max'),
-    ]
 
     for layer in layers:
         rows = by_layer[layer]
@@ -116,38 +109,24 @@ def main():
         dead = np.array([int(r['dead_features']) for r in rows])
         mean_active = np.array([float(r['mean_active']) for r in rows])
         norm_err = np.array([float(r['norm_err']) for r in rows])
-        above_1pct = np.array([int(r['active_above_1pct']) for r in rows])
-        above_10pct = np.array([int(r['active_above_10pct']) for r in rows])
-        mean_above_1pct = np.array([float(r['mean_active_above_1pct']) for r in rows])
-        mean_above_10pct = np.array([float(r['mean_active_above_10pct']) for r in rows])
 
         # Filter to xlim range if specified
         if args.xlim:
             mask = (lam >= args.xlim[0]) & (lam <= args.xlim[1])
             lam, latent_dim, dead = lam[mask], latent_dim[mask], dead[mask]
             mean_active, norm_err = mean_active[mask], norm_err[mask]
-            above_1pct, above_10pct = above_1pct[mask], above_10pct[mask]
-            mean_above_1pct, mean_above_10pct = mean_above_1pct[mask], mean_above_10pct[mask]
 
         c = layer_color[layer]
 
-        # Panel 1: ever-active — three thresholds, same color, different linestyles
-        for vals, (ls, mk, _) in zip(
-            [latent_dim - dead, above_1pct, above_10pct], thresh_styles
-        ):
-            ax_ever.plot(lam, vals, color=c, linestyle=ls, marker=mk,
-                         markersize=4, linewidth=1.5,
-                         label=sae_label(layer, args.report_notation, short=True)
-                         if ls == 'solid' else '_nolegend_')
+        # Panel 1: ever-active features (>0)
+        ax_ever.plot(lam, latent_dim - dead, color=c, linestyle='solid',
+                     marker='o', markersize=4, linewidth=1.5,
+                     label=sae_label(layer, args.report_notation, short=True))
 
-        # Panel 2: mean active — three thresholds
-        for vals, (ls, mk, _) in zip(
-            [mean_active, mean_above_1pct, mean_above_10pct], thresh_styles
-        ):
-            ax_mean.plot(lam, vals, color=c, linestyle=ls, marker=mk,
-                         markersize=4, linewidth=1.5,
-                         label=sae_label(layer, args.report_notation, short=True)
-                         if ls == 'solid' else '_nolegend_')
+        # Panel 2: mean active features (>0)
+        ax_mean.plot(lam, mean_active, color=c, linestyle='solid',
+                     marker='o', markersize=4, linewidth=1.5,
+                     label=sae_label(layer, args.report_notation, short=True))
 
         # Panel 3: normalized classification error
         ax_class.plot(lam, norm_err, '-o', color=c,
@@ -166,21 +145,16 @@ def main():
     random_err = first_sae / first_norm if first_norm != 0 else 1.0
     norm_baseline = baseline_err / random_err
     ax_class.axhline(norm_baseline, color='grey', linestyle='--', linewidth=1,
-                      label=f'Baseline ({norm_baseline:.4f})')
+                      label=f'Baseline ({norm_baseline:.2f})')
 
-    # Add linestyle legend to panels 1 and 2
+    # Layer legend on panels 1 and 2
     for ax in (ax_ever, ax_mean):
-        thresh_handles = [
-            plt.Line2D([0], [0], color='grey', linestyle=ls, marker=mk,
-                       markersize=4, label=lbl)
-            for ls, mk, lbl in thresh_styles
-        ]
-        layer_handles, _ = ax.get_legend_handles_labels()
-        ax.legend(handles=layer_handles + thresh_handles, fontsize=8)
+        ax.legend(fontsize=8)
 
+    mean_ylabel = r'Mean $L_0$' if args.report_notation else 'Mean active per token'
     panel_info = [
         (ax_ever,  'Ever-active features',   'Feature count'),
-        (ax_mean,  'Mean active features',   'Mean active per token'),
+        (ax_mean,  'Mean active features',   mean_ylabel),
         (ax_class, 'Normalized classification error',   'Normalized error'),
     ]
 
@@ -190,7 +164,7 @@ def main():
             ax.set_yscale('log')
         if args.xlim:
             ax.set_xlim(args.xlim)
-        ax.set_xlabel('lambda_1', fontsize=11)
+        ax.set_xlabel(r'$\lambda$', fontsize=11)
         ax.set_ylabel(ylabel, fontsize=11)
         ax.set_title(title, fontsize=12)
         ax.grid(True, which='both', linestyle='--', linewidth=0.4, alpha=0.6)

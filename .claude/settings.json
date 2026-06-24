@@ -31,7 +31,25 @@
       "Bash(timeout 200 python main.py --device cpu --mode class --num_features 8 --num_classes 8 --num_synonyms 2 --tuple_size 2 --num_layers 2 --num_tokens 4 --seed_rules 1 --train_size 256 --test_size 256 --batch_size 64 --seed_sample 2 --input_format long --whitening 0 --model transformer_freeclass_nores --depth 2 --width 32 --embedding_dim 32 --num_heads 2 --ffwd_size 2 --dropout 0.0 --seed_model 3 --lr 1e-3 --optim adam --max_epochs 4 --print_freq 4 --save_freq 2 --loss_threshold 1e-6 --save_models --outname /tmp/freeclass_nores_test)",
       "Bash(timeout 200 python train_sae.py --train_output /tmp/freeclass_test.pt --model_variant last --device cpu --sae_activation_source mean_pooled --sae_steps 20 --sae_log_points 4 --sae_lambda_l1 1.0 --sae_lr 1e-3 --sae_train_size 128 --sae_eval_size 128 --outname /tmp/freeclass_sae.pt)",
       "Bash(cd /home/ponsin/SAE-on-RHM *)",
-      "Read(//work/**)"
+      "Read(//work/**)",
+      "Bash(python -m py_compile scripts/sae_sweep/min_entropy_diag.py)",
+      "Bash(echo \"=== Example sweep subdir ===\")",
+      "Bash(ls -d /work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_16_wdecay_0.0001_dropout_0.1_nores/sweep_alltokens_layer1_lambda1_zoom/)",
+      "Bash(echo \"=== analysis_files ===\")",
+      "Bash(ls /work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_16_wdecay_0.0001_dropout_0.1_nores/sweep_alltokens_layer1_lambda1_zoom/analysis_files/)",
+      "Bash(echo \"=== all sweep_* dirs in example ===\")",
+      "Bash(echo \"=== contents ===\")",
+      "Bash(ls /work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_4_wdecay_0.0001/sweep_alltokens_layer0_lambda1_zoom)",
+      "Bash(ls /work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_4_wdecay_0.0001/sweep_alltokens_layer0_lambda1_zoom/analysis_files)",
+      "Bash(echo \"=== sae_checkpoints ===\")",
+      "Bash(ls /work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_4_wdecay_0.0001/sweep_alltokens_layer0_lambda1_zoom/sae_checkpoints)",
+      "Bash(python scripts/sae_sweep/plot_lambda_metrics.py --csv /work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_16_wdecay_0.0001_dropout_0.1_nores/sweep_alltokens_layer0_lambda1_zoom/analysis_files/sweep_metrics.csv --outfile /work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_16_wdecay_0.0001_dropout_0.1_nores/sweep_alltokens_layer0_lambda1_zoom/analysis_plots/lambda_metrics_report_notation.png --report-notation)",
+      "Bash(python scripts/sae_sweep/feature_splitting_diag.py --artifacts_dir /work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_16_wdecay_0.0001_dropout_0.1_nores/sweep_alltokens_layer1_lambda1_zoom/analysis_files --alpha 0.25 --plot_schemes dec --report-notation)",
+      "Bash(python scripts/sae_sweep/feature_splitting_alpha_sweep.py --artifacts_dir /work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_4_wdecay_0.0001/sweep_alltokens_layer1_lambda1_zoom/analysis_files --lambda_target 0.01 --plot_schemes dec --report-notation)",
+      "Bash(xargs ls -la)",
+      "Bash(bash slurm/intervention/Job_ablate_nores_v16_L3_m16.sh)",
+      "Bash(squeue -u ponsin --format=\"%.10i %.15j %.8T %.10M %.5D %R\")",
+      "Bash(squeue -u ponsin -j 3653615,3653616,3653617)"
     ],
     "additionalDirectories": [
       "/tmp"

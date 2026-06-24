@@ -35,7 +35,6 @@
 SWEEP_CONFIGS="${SWEEP_CONFIGS:-/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_8_L_4_m_8_wdecay_0.0001_dropout_0.1_freeclassnores/sweep_alltokens_layer3_lambda1_zoom/sweep_configs.json}"
 REPO_DIR=/home/ponsin/SAE-on-RHM
 # =============================================================================
-
 # ── Environment setup ─────────────────────────────────────────────────────────
 if [ -z "${SLURM_ARRAY_TASK_ID}" ]; then
     echo "ERROR: SLURM_ARRAY_TASK_ID is not set. Submit this script with sbatch, not directly."
