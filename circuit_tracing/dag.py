@@ -23,6 +23,47 @@ from typing import Iterable
 import torch
 
 
+SCHEME_NAMES = ('parent', 'level', 'whole_tree', 'reassigned')
+
+
+def _lift_scheme(sch: dict, v: int, n: int) -> dict:
+    """Lift one per-feature scheme record to a node-ready dict.
+
+    sch is a labels.py scheme entry: {level, position, value,
+    p_value_given_fire, normalized_entropy, value_distribution, values,
+    [reassigned/ratio/child_* for the reassigned scheme]}. The vocab size is
+    keyed off THIS scheme's level (n at level 0, v otherwise), so the lifted
+    value_distribution_full is correct even when schemes land on different
+    levels. Dead/undefined distributions stay None.
+    """
+    level = sch.get('level')
+    V_level = int(n) if level == 0 else int(v)
+    vd = sch.get('value_distribution')
+    vs = sch.get('values')
+    if vd is None or vs is None:
+        vd_full = None
+    else:
+        vd_full = torch.zeros(V_level, dtype=torch.float32)
+        vd_full[vs.long()] = vd.float()
+    rec = {
+        'level': level,
+        'position': sch.get('position'),
+        'V_level': V_level,
+        'label_value': sch.get('value'),
+        'p_value_given_fire': sch.get('p_value_given_fire'),
+        'normalized_entropy': sch.get('normalized_entropy'),
+        'value_distribution_full': vd_full,
+    }
+    # reassigned scheme carries the absorption precision tags.
+    if 'reassigned' in sch:
+        rec['reassigned'] = bool(sch.get('reassigned'))
+        rec['ratio'] = sch.get('ratio')
+        rec['child_level'] = sch.get('child_level')
+        rec['child_position'] = sch.get('child_position')
+        rec['child_value'] = sch.get('child_value')
+    return rec
+
+
 def feat_key(k: int, p: int, i: int):
     return ('feat', int(k), int(p), int(i))
 
@@ -83,9 +124,15 @@ def build_node_table(
     v: int,
     n: int,
     pooled_last_layer: bool = False,
+    primary: str = 'reassigned',
 ) -> dict:
     """Return dict node_key -> attrs for every active feature, every error,
     every embedding (one per position), and every logit class.
+
+    `primary` selects which of the four label schemes the back-compat
+    top-level feature fields (level, label_value, value_distribution_full,
+    ...) mirror; the full per-scheme overlay is always stored under
+    node['schemes'].
 
     z_per_layer[k]   : [N, F_k] post-ReLU SAE encoder activations. When
                        pooled_last_layer is True, z_per_layer[K-1] is [1, F]
@@ -134,37 +181,52 @@ def build_node_table(
                 z = float(z_k[p, i].item())
                 if z <= 0:
                     continue
-                lab = labels_k.get((p, i), {
+                # Default record for a feature with no label entry (dead in the
+                # eval set): every scheme falls back to the block-aligned cell
+                # with an empty distribution.
+                empty_sch = {
+                    'level': target_level, 'position': target_pos,
                     'value': None, 'p_value_given_fire': float('nan'),
-                    'level': target_level, 'parent_position': target_pos,
-                    'firing_count': 0,
-                    'value_distribution': None, 'values': None,
                     'normalized_entropy': None,
-                })
-                # Lift the per-feature conditional vector to the full
-                # parent-level vocab so cross-position group averaging is
-                # easy. Dead features keep value_distribution_full = None.
-                vd = lab.get('value_distribution')
-                vs = lab.get('values')
-                if vd is None or vs is None:
-                    vd_full = None
-                else:
-                    vd_full = torch.zeros(V_level, dtype=torch.float32)
-                    vd_full[vs.long()] = vd.float()
+                    'value_distribution': None, 'values': None,
+                }
+                lab = labels_k.get((p, i))
+                if lab is None:
+                    lab = {
+                        'value': None, 'p_value_given_fire': float('nan'),
+                        'level': target_level, 'parent_position': target_pos,
+                        'firing_count': 0,
+                        'value_distribution': None, 'values': None,
+                        'normalized_entropy': None,
+                        'schemes': {sc: dict(empty_sch) for sc in SCHEME_NAMES},
+                    }
+                # Per-scheme lifted records. Membership/topology are
+                # scheme-independent; only the label overlay differs.
+                lab_schemes = lab.get('schemes',
+                                      {sc: dict(empty_sch) for sc in SCHEME_NAMES})
+                schemes = {sc: _lift_scheme(lab_schemes.get(sc, empty_sch), v, n)
+                           for sc in SCHEME_NAMES}
+                # Back-compat top-level fields mirror the chosen primary scheme
+                # exactly (its own level -> its own V_level and lifted dist).
+                prim = schemes[primary]
                 out[feat_key(k, p, i)] = {
                     'kind': 'feature',
                     'layer': k,
                     'position': p,
                     'feature': i,
                     'z': z,
-                    'level': lab['level'],
-                    'parent_position': lab['parent_position'],
-                    'V_level': V_level,
-                    'label_value': lab['value'],
-                    'p_value_given_fire': lab['p_value_given_fire'],
+                    'level': prim['level'],
+                    # block-aligned ancestor position, scheme-independent (the
+                    # tree-routing position, kept stable for grouping/fidelity).
+                    # The scheme's own latent position is in schemes[sc].
+                    'parent_position': target_pos,
+                    'V_level': prim['V_level'],
+                    'label_value': prim['label_value'],
+                    'p_value_given_fire': prim['p_value_given_fire'],
                     'eval_firing_count': lab['firing_count'],
-                    'value_distribution_full': vd_full,
-                    'normalized_entropy': lab.get('normalized_entropy'),
+                    'value_distribution_full': prim['value_distribution_full'],
+                    'normalized_entropy': prim['normalized_entropy'],
+                    'schemes': schemes,
                 }
 
     # Embedding nodes: one per leaf position. Group by leaf-group of size s

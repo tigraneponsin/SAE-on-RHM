@@ -57,7 +57,7 @@ import math
 
 import torch
 
-from .dag import feat_key
+from .dag import feat_key, SCHEME_NAMES
 
 
 def _sign_of(w: float) -> int:
@@ -68,6 +68,138 @@ def _sign_of(w: float) -> int:
     return 0
 
 
+def _norm_entropy_of(value_distribution, V_level):
+    """Normalized entropy H(dist)/log(V_level) clipped to [0,1]; None if undef."""
+    if value_distribution is None or V_level is None or V_level <= 1:
+        return None
+    p = value_distribution.double()
+    H = float(-torch.special.xlogy(p, p).sum().item())
+    ref = math.log(V_level)
+    if ref <= 0 or not math.isfinite(H):
+        return None
+    ne = H / ref
+    if ne < 0.0:
+        ne = 0.0
+    elif ne > 1.0:
+        ne = 1.0
+    return ne
+
+
+def _group_label_for_scheme(members, nodes, sc):
+    """Plurality-cell group label for one scheme.
+
+    Partition the group's members by their scheme-`sc` latent cell
+    (level, position); the plurality cell (most members; ties -> larger subset
+    z_sum -> lower (level, position)) is the group's label. The value
+    distribution is the z-weighted average over the plurality subset ONLY, so
+    constituents that point at a different latent do not pollute the label.
+
+    Returns a dict:
+      level, position, V_level,
+      label_value, p_value_given_fire, normalized_entropy, value_distribution,
+      n_plurality, n_labelled,
+      disagreement_frac        (1 - n_plurality / n_labelled, by count),
+      disagreement_frac_z      (same, z-weighted),
+      cell_distribution        {(level,position) -> z-share}  (for hover/diag).
+    Fields are None/NaN when no member carries a scheme-`sc` distribution.
+    """
+    # Collect, per member, its scheme cell + lifted dist + z.
+    entries = []  # (level, position, V_level, vd_full, z)
+    for m in members:
+        sch = nodes[m].get('schemes', {}).get(sc)
+        if sch is None:
+            continue
+        vd = sch.get('value_distribution_full')
+        if vd is None:
+            continue
+        entries.append((sch.get('level'), sch.get('position'),
+                        sch.get('V_level'), vd, float(nodes[m]['z'])))
+    if not entries:
+        return {
+            'level': None, 'position': None, 'V_level': None,
+            'label_value': None, 'p_value_given_fire': float('nan'),
+            'normalized_entropy': None, 'value_distribution': None,
+            'n_plurality': 0, 'n_labelled': 0,
+            'disagreement_frac': float('nan'),
+            'disagreement_frac_z': float('nan'),
+            'cell_distribution': {},
+        }
+
+    # Bucket members by (level, position).
+    cells = {}
+    for (lvl, pos, V_level, vd, z) in entries:
+        cells.setdefault((lvl, pos), []).append((V_level, vd, z))
+    n_labelled = len(entries)
+    z_total = sum(z for (_, _, _, _, z) in entries)
+
+    # cell z-share (for diagnostics / hover).
+    cell_distribution = {}
+    for cell, items in cells.items():
+        cell_distribution[cell] = (
+            sum(z for (_, _, z) in items) / z_total if z_total > 0 else 0.0)
+
+    # Plurality cell: most members; tie -> larger z_sum -> lower (level, pos).
+    def _cell_rank(cell):
+        items = cells[cell]
+        n = len(items)
+        zsum = sum(z for (_, _, z) in items)
+        lvl, pos = cell
+        # sort key: more members, then more z, then lower level, lower pos.
+        return (-n, -zsum, (lvl if lvl is not None else 1 << 30),
+                (pos if pos is not None else 1 << 30))
+    plurality_cell = min(cells.keys(), key=_cell_rank)
+    plur_items = cells[plurality_cell]
+    n_plurality = len(plur_items)
+    z_plur = sum(z for (_, _, z) in plur_items)
+
+    lvl, pos = plurality_cell
+    V_level = plur_items[0][0]
+
+    # z-weighted average of the plurality subset's distributions.
+    num = None
+    denom = 0.0
+    for (V_lv, vd, z) in plur_items:
+        if num is None:
+            num = z * vd.float().clone()
+        else:
+            num = num + z * vd.float()
+        denom += z
+    if num is None or denom <= 0:
+        value_distribution = None
+        label_value = None
+        p_label = float('nan')
+        norm_entropy = None
+    else:
+        value_distribution = num / denom
+        total_mass = float(value_distribution.sum().item())
+        if total_mass <= 0:
+            value_distribution = None
+            label_value = None
+            p_label = float('nan')
+            norm_entropy = None
+        else:
+            value_distribution = value_distribution / total_mass
+            label_value = int(value_distribution.argmax().item())
+            p_label = float(value_distribution[label_value].item())
+            norm_entropy = _norm_entropy_of(value_distribution, V_level)
+
+    disagree_count = 1.0 - (n_plurality / n_labelled) if n_labelled > 0 else float('nan')
+    disagree_z = 1.0 - (z_plur / z_total) if z_total > 0 else float('nan')
+
+    return {
+        'level': lvl, 'position': pos, 'V_level': V_level,
+        'label_value': label_value, 'p_value_given_fire': p_label,
+        'normalized_entropy': norm_entropy,
+        'value_distribution': value_distribution,
+        'n_plurality': n_plurality, 'n_labelled': n_labelled,
+        'disagreement_frac': disagree_count,
+        'disagreement_frac_z': disagree_z,
+        'cell_distribution': {('%d,%d' % (c[0], c[1]) if c[0] is not None
+                               else 'none'): sh
+                              for c, sh in cell_distribution.items()},
+    }
+
+
 def group_by_signature(
     nodes: dict,
     pruned_edges: list,
@@ -76,8 +208,15 @@ def group_by_signature(
     L: int,
     v: int,
     n: int,
+    primary: str = 'reassigned',
 ) -> tuple[dict, list, dict]:
     """Collapse feature nodes in the pruned graph by incoming signature.
+
+    Grouping (membership/topology) is scheme-INDEPENDENT: features merge by
+    incoming signature only. For each of the four label schemes we then compute
+    a per-group label by the plurality-cell rule (see _group_label_for_scheme)
+    and a disagreement metric, stored under group['schemes'][scheme]. The
+    back-compat top-level group label fields mirror `primary`.
 
     Returns
     -------
@@ -165,58 +304,16 @@ def group_by_signature(
             constituents = sorted([(int(m[2]), int(m[3])) for m in members])
             z_list = [float(nodes[m]['z']) for m in members]
             z_sum = float(sum(z_list))
-            V_level = int(nodes[members[0]]['V_level'])
 
-            # Weighted average of value_distribution_full. Dead constituents
-            # (value_distribution_full is None) are skipped from the
-            # numerator but still contribute their z to the denominator --
-            # actually, better: skip them entirely from BOTH so the
-            # average reflects only constituents with eval evidence. If
-            # every constituent is dead, the group's distribution is None.
-            num = None
-            denom = 0.0
-            for m, z in zip(members, z_list):
-                vd = nodes[m].get('value_distribution_full')
-                if vd is None:
-                    continue
-                if num is None:
-                    num = z * vd.float().clone()
-                else:
-                    num = num + z * vd.float()
-                denom += z
-            if num is None or denom <= 0:
-                value_distribution = None
-                label_value = None
-                p_label = float('nan')
-                norm_entropy = None
-            else:
-                value_distribution = num / denom
-                total_mass = float(value_distribution.sum().item())
-                if total_mass <= 0:
-                    value_distribution = None
-                    label_value = None
-                    p_label = float('nan')
-                    norm_entropy = None
-                else:
-                    value_distribution = value_distribution / total_mass
-                    label_value = int(value_distribution.argmax().item())
-                    p_label = float(value_distribution[label_value].item())
-                    # H in nats; reference is log(V_level).
-                    p = value_distribution.double()
-                    H = float(-torch.special.xlogy(p, p).sum().item())
-                    ref = math.log(V_level) if V_level > 1 else 0.0
-                    if ref > 0 and math.isfinite(H):
-                        norm_entropy = H / ref
-                        if norm_entropy < 0.0:
-                            norm_entropy = 0.0
-                        elif norm_entropy > 1.0:
-                            norm_entropy = 1.0
-                    else:
-                        norm_entropy = None
+            # Per-scheme label by the plurality-cell rule (scheme-independent
+            # membership, per-scheme label + disagreement overlay).
+            scheme_labels = {
+                sc: _group_label_for_scheme(members, nodes, sc)
+                for sc in SCHEME_NAMES
+            }
+            prim = scheme_labels[primary]
 
-            # Pull a representative target_level / parent_position. Level
-            # is shared across constituents at the same layer (= L - 1 - k).
-            target_level = L - 1 - k
+            # block-aligned ancestor positions, scheme-independent.
             parent_positions = sorted({
                 int(nodes[m]['parent_position']) for m in members
             })
@@ -224,18 +321,22 @@ def group_by_signature(
             attrs = {
                 'kind': 'group',
                 'layer': k,
-                'level': target_level,
-                'V_level': V_level,
+                # top-level label fields mirror the chosen primary scheme.
+                'level': prim['level'],
+                'V_level': prim['V_level'],
                 'positions': positions,
                 'position_centroid': float(sum(positions) / len(positions)),
                 'parent_positions': parent_positions,
                 'constituents': constituents,
                 'n_constituents': len(members),
                 'z_sum': z_sum,
-                'value_distribution': value_distribution,
-                'label_value': label_value,
-                'p_value_given_fire': p_label,
-                'normalized_entropy': norm_entropy,
+                'value_distribution': prim['value_distribution'],
+                'label_value': prim['label_value'],
+                'p_value_given_fire': prim['p_value_given_fire'],
+                'normalized_entropy': prim['normalized_entropy'],
+                'disagreement_frac': prim['disagreement_frac'],
+                'disagreement_frac_z': prim['disagreement_frac_z'],
+                'schemes': scheme_labels,
                 # Signature as a list of ((kind, ...key tuple...), sign) for
                 # serialization friendliness in hover text.
                 'signature': sorted(

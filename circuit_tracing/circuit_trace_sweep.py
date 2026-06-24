@@ -93,6 +93,14 @@ def main():
                    help='Treat the last-layer SAE as a single mean-pooled SAE '
                         '(post-ln_f pooled space) instead of per-position. '
                         'Auto-detected from the last SAE\'s sae_activation_source.')
+    p.add_argument('--label_alpha', type=float, default=0.5,
+                   help='Absorption reassignment threshold for the "reassigned" '
+                        'label scheme (default 0.5). Built once in '
+                        'prepare_pipeline; the threshold sweep does not vary it.')
+    p.add_argument('--label_primary', default='reassigned',
+                   choices=['parent', 'level', 'whole_tree', 'reassigned'],
+                   help='Label scheme the top-level node/group fields mirror '
+                        '(default reassigned). All four are always stored.')
     args = p.parse_args()
 
     node_thresholds = sorted(_validate_thresholds(args.node_thresholds, '--node_thresholds'))

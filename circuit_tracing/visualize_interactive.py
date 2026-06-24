@@ -205,41 +205,104 @@ def _edge_widths_alphas(weights, max_width=4.0, min_width=0.2,
 
 
 # ---------------------------------------------------------------------------
+# Label-scheme selection
+# ---------------------------------------------------------------------------
+
+# A node may carry per-scheme labels under attrs['schemes'][scheme]. When a
+# scheme is requested we read the displayed label/entropy/level/position from
+# there; otherwise (scheme=None) we use the top-level mirror, which is the
+# behavior of all pre-scheme callers.
+SCHEME_NAMES = ('parent', 'level', 'whole_tree', 'reassigned')
+
+# Group nodes with disagreement above this fraction get a visible (red) outline
+# on the grouped panel, flagging that their signature-merged constituents point
+# at different latent cells under the displayed scheme.
+DISAGREEMENT_OUTLINE_THRESHOLD = 0.2
+
+
+def _scheme_view(attrs, scheme):
+    """Return the label fields to display for `attrs` under `scheme`.
+
+    Falls back to the node's top-level fields when scheme is None or the node
+    has no per-scheme record (errors/embeds/logits, or pre-scheme node tables).
+    Returns a dict with at least label_value, p_value_given_fire,
+    normalized_entropy, level, position, plus disagreement_frac for groups.
+    """
+    if scheme is None:
+        return {
+            'label_value': attrs.get('label_value'),
+            'p_value_given_fire': attrs.get('p_value_given_fire', float('nan')),
+            'normalized_entropy': attrs.get('normalized_entropy'),
+            'level': attrs.get('level'),
+            'position': attrs.get('parent_position', attrs.get('position')),
+            'disagreement_frac': attrs.get('disagreement_frac'),
+            'reassigned': attrs.get('reassigned'),
+            'child_value': attrs.get('child_value'),
+        }
+    sdict = attrs.get('schemes')
+    if not sdict or scheme not in sdict:
+        return _scheme_view(attrs, None)
+    sv = sdict[scheme]
+    return {
+        'label_value': sv.get('label_value', sv.get('value')),
+        'p_value_given_fire': sv.get('p_value_given_fire', float('nan')),
+        'normalized_entropy': sv.get('normalized_entropy'),
+        'level': sv.get('level'),
+        'position': sv.get('position'),
+        'disagreement_frac': sv.get('disagreement_frac'),
+        'reassigned': sv.get('reassigned'),
+        'child_value': sv.get('child_value'),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Hover-text builders
 # ---------------------------------------------------------------------------
 
-def _hover_feature(key, attrs, report=False) -> str:
+def _hover_feature(key, attrs, report=False, scheme=None) -> str:
     _, k, p, i = key
     blk = sae_row_label(k, report)
+    sv = _scheme_view(attrs, scheme)
+    scheme_tag = f' [{scheme}]' if scheme else ''
     parts = [
         f'feature ({blk}, position={p}, feat_index={i})',
         f'z = {float(attrs.get("z", 0)):.3f}',
-        f'label_value = {attrs.get("label_value")}',
-        f'P(label | fire) = {float(attrs.get("p_value_given_fire", float("nan"))):.3f}',
+        f'label_value{scheme_tag} = {sv["label_value"]}',
+        f'latent cell = (level={sv["level"]}, pos={sv["position"]})',
+        f'P(label | fire) = {float(sv["p_value_given_fire"]):.3f}',
     ]
-    ne = attrs.get('normalized_entropy')
+    ne = sv['normalized_entropy']
     parts.append(
         f'normalized_entropy = {ne:.3f}' if ne is not None
         else 'normalized_entropy = N/A'
     )
+    if scheme == 'reassigned' and sv.get('reassigned'):
+        parts.append(f'REASSIGNED (child value tag = {sv.get("child_value")})')
     fc = attrs.get('eval_firing_count')
     if fc is not None:
         parts.append(f'eval_firing_count = {fc}')
     return '<br>'.join(parts)
 
 
-def _hover_group(key, attrs, report=False) -> str:
+def _hover_group(key, attrs, report=False, scheme=None) -> str:
     _, k, g_idx = key
     blk = sae_row_label(k, report)
+    sv = _scheme_view(attrs, scheme)
+    scheme_tag = f' [{scheme}]' if scheme else ''
     parts = [
         f'group ({blk}, idx={g_idx})',
         f'n_constituents = {attrs["n_constituents"]}',
         f'positions = {attrs["positions"]}',
         f'z_sum = {float(attrs["z_sum"]):.3f}',
-        f'label_value = {attrs.get("label_value")}',
-        f'P(label | fire) = {float(attrs.get("p_value_given_fire", float("nan"))):.3f}',
+        f'label_value{scheme_tag} = {sv["label_value"]}',
+        f'latent cell = (level={sv["level"]}, pos={sv["position"]})',
+        f'P(label | fire) = {float(sv["p_value_given_fire"]):.3f}',
     ]
-    ne = attrs.get('normalized_entropy')
+    dis = sv.get('disagreement_frac')
+    if dis is not None and dis == dis:  # not NaN
+        parts.append(f'label disagreement = {dis:.2f} '
+                     f'(constituents split across latent cells)')
+    ne = sv['normalized_entropy']
     parts.append(
         f'normalized_entropy = {ne:.3f}' if ne is not None
         else 'normalized_entropy = N/A'
@@ -361,7 +424,8 @@ def _scaled_marker_size(base, value, scale_min=0.6, scale_max=2.4,
 
 
 def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
-                           p_ref: float, z_ref: float, report=False):
+                           p_ref: float, z_ref: float, report=False,
+                           scheme=None):
     import plotly.graph_objects as go
     feat_x, feat_y, feat_c, feat_s, feat_t, feat_l = [], [], [], [], [], []
     err_x, err_y, err_t = [], [], []
@@ -374,12 +438,13 @@ def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
         attrs = nodes[key]
         kind = attrs['kind']
         if kind == 'feature':
+            sv = _scheme_view(attrs, scheme)
             feat_x.append(x); feat_y.append(y)
-            feat_c.append(_entropy_color_hex(attrs.get('normalized_entropy')))
+            feat_c.append(_entropy_color_hex(sv['normalized_entropy']))
             feat_s.append(_scaled_marker_size(14, float(attrs.get('z', 0)),
                                               ref_value=z_ref))
-            feat_t.append(_hover_feature(key, attrs, report))
-            lv = attrs.get('label_value')
+            feat_t.append(_hover_feature(key, attrs, report, scheme=scheme))
+            lv = sv['label_value']
             feat_l.append('' if lv is None else str(int(lv)))
         elif kind == 'error':
             err_x.append(x); err_y.append(y)
@@ -438,9 +503,11 @@ def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
 
 
 def _node_traces_grouped(grouped_nodes: dict, kept: set, pos: dict, K: int,
-                         p_ref: float, z_ref: float, report=False):
+                         p_ref: float, z_ref: float, report=False,
+                         scheme=None):
     import plotly.graph_objects as go
     grp_x, grp_y, grp_c, grp_s, grp_t, grp_l = [], [], [], [], [], []
+    grp_line_c, grp_line_w = [], []
     err_x, err_y, err_t = [], [], []
     emb_x, emb_y, emb_t, emb_l = [], [], [], []
     log_x, log_y, log_t, log_s, log_l = [], [], [], [], []
@@ -451,13 +518,25 @@ def _node_traces_grouped(grouped_nodes: dict, kept: set, pos: dict, K: int,
         attrs = grouped_nodes[key]
         kind = attrs.get('kind', key[0])
         if kind == 'group':
+            sv = _scheme_view(attrs, scheme)
             grp_x.append(x); grp_y.append(y)
-            grp_c.append(_entropy_color_hex(attrs.get('normalized_entropy')))
+            grp_c.append(_entropy_color_hex(sv['normalized_entropy']))
             grp_s.append(_scaled_marker_size(16, float(attrs.get('z_sum', 0)),
                                              ref_value=z_ref))
-            grp_t.append(_hover_group(key, attrs, report))
-            lv = attrs.get('label_value')
+            grp_t.append(_hover_group(key, attrs, report, scheme=scheme))
+            lv = sv['label_value']
             grp_l.append('' if lv is None else str(int(lv)))
+            # Disagreement outline: red + thicker when the group's
+            # signature-merged constituents split across latent cells under
+            # this scheme.
+            dis = sv.get('disagreement_frac')
+            if dis is not None and dis == dis and \
+                    dis > DISAGREEMENT_OUTLINE_THRESHOLD:
+                grp_line_c.append('#d62728')
+                grp_line_w.append(3.0)
+            else:
+                grp_line_c.append('#000000')
+                grp_line_w.append(1.6)
         elif kind == 'error':
             err_x.append(x); err_y.append(y)
             err_t.append(_hover_err(key, attrs, report))
@@ -477,7 +556,7 @@ def _node_traces_grouped(grouped_nodes: dict, kept: set, pos: dict, K: int,
         traces.append(go.Scatter(
             x=grp_x, y=grp_y, mode='markers+text',
             marker=dict(symbol='circle', size=grp_s, color=grp_c,
-                        line=dict(color='#000000', width=1.6)),
+                        line=dict(color=grp_line_c, width=grp_line_w)),
             text=grp_l, textposition='middle center',
             textfont=dict(size=8),
             hovertext=grp_t, hoverinfo='text',

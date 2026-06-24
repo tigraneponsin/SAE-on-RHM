@@ -59,12 +59,12 @@ sys.path.insert(0, str(_here.parent.parent))         # repo root (datasets)
 from notation import report_level, add_report_flag
 from plot_entropy_lambda import _find_threshold_lambda
 from min_entropy_diag import (weighted_aggregate, weights_for_scheme,
-                              torch_nanmin, SCHEMES, sanity_check)
-from sae_loading import load_sae, resolve_rules
-from datasets.random_hierarchy_model import latent_prior
+                              SCHEMES, sanity_check)
+# Shared per-feature labeling core. resolve_leak_table is re-exported so
+# existing importers (feature_splitting_alpha_sweep) keep working.
+from absorption import per_feature_labels, resolve_leak_table  # noqa: F401
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 DEFAULT_ARTIFACTS_DIR = (
     '/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/'
@@ -76,101 +76,6 @@ DEFAULT_ALPHA = 0.5
 # y-limits for every entropy subplot (small margin so plateaus at 0/1 stay
 # visible). Shared by make_plot and the averaged panel.
 ENTROPY_YLIM = (-0.02, 1.02)
-
-
-def _entropy_nats(p):
-    """Shannon entropy in nats of a distribution (or batch over last dim)."""
-    p64 = p.double()
-    return float(-torch.special.xlogy(p64, p64).sum())
-
-
-def resolve_leak_table(art, artifacts_dir):
-    """Value-specific structural leak H(Z_parent | Z_child = c) for every
-    (child cell, child value), from the RHM rules. Identical across the whole
-    sweep, so resolve once.
-
-    rules are NOT in the *.sae_eval.pt artifact. Chain:
-      art['ckpt_path'] name -> <sweep>/sae_checkpoints/<stem>.pt (SAE ckpt)
-      load_sae(..., load_model=False)['train_output']  -> transformer ckpt
-      resolve_rules(torch.load(transformer), ...)       -> rules (+ source)
-    resolve_rules has its own deterministic seed_rules fallback.
-
-    Returns:
-      leak_norm : {(l_child, j_child, c_val) -> float}, the value-specific leak
-                  H(Z_parent | Z_child = c_val) / H_theoretical[parent]. NaN
-                  where the child value is unreachable (P(child=c)=0).
-      leak_rows : list of dicts for the leak CSV (raw nats + the normalizer).
-      src       : rules source string ('artifact' / 'seed_rules_resampled').
-    """
-    rhm = art['rhm']
-    n, v, s, L = int(rhm['n']), int(rhm['v']), int(rhm['s']), int(rhm['L'])
-
-    # Locate the SAE checkpoint (needed only to recover the transformer path,
-    # hence the RHM rules). The eval artifacts may sit one or more levels below
-    # the sweep root (e.g. analysis_files/new_analysis/), while sae_checkpoints/
-    # lives at the sweep root, so search 'sae_checkpoints/<name>' relative to
-    # the artifacts dir and every ancestor, then the literal ckpt_path.
-    ckpt_name = Path(art['ckpt_path']).name
-    candidates = [d / 'sae_checkpoints' / ckpt_name
-                  for d in [artifacts_dir] + list(artifacts_dir.parents)]
-    candidates.append(Path(art['ckpt_path']))
-    sae_ckpt = next((c for c in candidates if c.exists()), None)
-    if sae_ckpt is None:
-        raise SystemExit(
-            'cannot locate SAE checkpoint to recover RHM rules; tried %s'
-            % ', '.join(str(c) for c in candidates[:4] + [candidates[-1]]))
-    info = load_sae(str(sae_ckpt), input_dim=None, device='cpu',
-                    load_model=False)
-    if not info or not info.get('train_output'):
-        raise SystemExit('SAE checkpoint %s has no train_output to locate the '
-                         'transformer rules' % sae_ckpt)
-    train_output = info['train_output']
-    if not Path(train_output).exists():
-        raise SystemExit('transformer checkpoint %s (from %s) not found'
-                         % (train_output, sae_ckpt))
-    blob = torch.load(train_output, map_location='cpu', weights_only=False)
-    rules, src = resolve_rules(blob, train_output)
-
-    priors = latent_prior(rules, n, v)               # {level -> (s^l, V_l)}
-    H_theo = art['H_theoretical']                    # {(l,p) -> float}
-
-    leak_norm = {}
-    leak_rows = []
-    for l_c in range(1, L + 1):
-        l_par = l_c - 1
-        m = int(rules[l_par].shape[1])
-        for j_c in range(s ** l_c):
-            j_par = j_c // s
-            c = j_c % s
-            P_par = priors[l_par][j_par]              # (V_par,)
-            V_next = priors[l_c].shape[1]
-            oh = F.one_hot(rules[l_par][:, :, c].long(),
-                           num_classes=V_next).double()      # (V_par, m, V_next)
-            cond = oh.sum(dim=1) / float(m)           # (V_par, V_next) P(child|par)
-            joint = P_par.unsqueeze(1) * cond         # (V_par, V_next) P(par,child)
-            P_child = joint.sum(dim=0)                # (V_next,) P(child)
-            href_par = H_theo.get((l_par, j_par), float('nan'))
-            ok = isinstance(href_par, (int, float)) and href_par > 0 \
-                and math.isfinite(href_par)
-            # per-value leak H(Z_parent | Z_child = c_val), value-specific.
-            for c_val in range(V_next):
-                col = joint[:, c_val]                 # (V_par,) P(par, child=c_val)
-                pc = float(P_child[c_val])
-                if pc > 0:
-                    post = col / col.sum()            # P(par | child=c_val)
-                    leak = _entropy_nats(post)
-                else:
-                    leak = float('nan')               # unreachable child value
-                ln = (leak / href_par) if (ok and math.isfinite(leak)) \
-                    else float('nan')
-                leak_norm[(l_c, j_c, c_val)] = ln
-                leak_rows.append({
-                    'child_level': l_c, 'child_position': j_c,
-                    'child_value': c_val, 'parent_level': l_par,
-                    'parent_position': j_par, 'P_child': pc,
-                    'leak_nats': leak, 'parent_H_theoretical': float(href_par),
-                    'leak_norm': ln})
-    return leak_norm, leak_rows, src
 
 
 def process_artifact(art, leak_norm, alpha, collect_ratios=False):
@@ -187,112 +92,28 @@ def process_artifact(art, leak_norm, alpha, collect_ratios=False):
         the alpha-sweep diagnostic to threshold the SAME ratios at many alphas
         without recomputing entropies. Off by default (heavier output).
     """
-    rhm = art['rhm']
-    s = int(rhm['s'])
-    L = int(rhm['L'])
-    layer_id = int(art['layer_id'])
+    # Per-feature labeling core (no weighting). Provides, per position, the
+    # parent / level / whole-tree mins + argmins, the split-check ratio, and the
+    # reassign mask + final cell -- everything the weighted aggregates below
+    # need. Weighting stays here (aggregation-only); the core is shared with
+    # circuit_tracing/labels.py.
+    core = per_feature_labels(art, leak_norm, alpha)
 
-    pooled = (art.get('mode') == 'mean_pooled')
-    matched_level = 0 if pooled else (L - 1 - layer_id)
-
-    index_layout = art['index_layout']
-    H_per_feature = art['H_per_feature']          # [num_groups, P, F]
     firing_rate = art['firing_rate']              # [P, F]
     baseline_mean = art['baseline_mean']          # [P, F]
     decoder_norms = art['decoder_norms']          # [F]
-    token_positions = art['token_positions']      # [P]
-    H_theoretical = art['H_theoretical']          # {(level,pos)->float}
-    firing_count = art['firing_count']            # [P, F]
-    joint_fire_count = art['joint_fire_count']    # [num_targets, P, F]
-    targets = art['targets']                      # list of {level,position,value,..}
 
-    # row index of value 0 for each (level,pos) target cell; values are
-    # contiguous so cell (l,j) value c lives at row start_row[(l,j)] + c.
-    start_row = {}
-    for t_idx, t in enumerate(targets):
-        start_row.setdefault((int(t['level']), int(t['position'])), t_idx)
-
-    P = H_per_feature.shape[1]
-    num_groups = H_per_feature.shape[0]
-
-    group_index = {(int(g['level']), int(g['position'])): idx
-                   for idx, g in enumerate(index_layout)}
-
-    same_level_groups = [(int(g['level']), int(g['position']))
-                         for g in index_layout if int(g['level']) == matched_level]
-    if not same_level_groups:
-        raise ValueError('no index_layout groups at matched_level=%d' % matched_level)
-    whole_tree_groups = [(int(g['level']), int(g['position'])) for g in index_layout]
-    cand_sets = {'same_level': same_level_groups, 'whole_tree': whole_tree_groups}
-    cand_idxs = {name: [group_index[k] for k in groups]
-                 for name, groups in cand_sets.items()}
-
-    def _href_tensor(groups):
-        vals = []
-        for g in groups:
-            h = H_theoretical.get(g, float('nan'))
-            vals.append(h if (isinstance(h, (int, float)) and h > 0
-                              and math.isfinite(h)) else float('nan'))
-        return torch.tensor(vals, dtype=torch.float64)
-    cand_href = {name: _href_tensor(groups)
-                 for name, groups in cand_sets.items()}
-
-    # whole-tree group cells as level/pos tensors, aligned to that candidate
-    # stack, so each feature's argmin row maps straight to its child cell.
-    wt_idxs = cand_idxs['whole_tree']
-    wt_level = torch.tensor([whole_tree_groups[r][0] for r in range(len(wt_idxs))],
-                            dtype=torch.long)
-    wt_pos = torch.tensor([whole_tree_groups[r][1] for r in range(len(wt_idxs))],
-                          dtype=torch.long)
-
-    # value-specific leak lookup is per (child cell, child value), and the value
-    # c_i depends on the feature AND the SAE position (the value it fires most
-    # on), so it is resolved inside the position loop, not statically here.
-    V_child = {}                                  # (level,pos) -> num values
-    for g in index_layout:
-        V_child[(int(g['level']), int(g['position']))] = len(g['values'])
-
-    def _value_specific_leakN(child_level_t, child_pos_t, p_idx):
-        """[F] normalized leak H(parent|child=c_i)/H_theo[parent], with c_i the
-        value each feature fires most on at this position. NaN where the child
-        is the root (no parent) or the value/leak is undefined."""
-        F_n = child_level_t.shape[0]
-        out_ln = torch.full((F_n,), float('nan'), dtype=torch.float64)
-        feat_ar = torch.arange(F_n)
-        # c_i = argmax over the child cell's value rows of joint_fire_count.
-        # Group features by their argmin child cell so each gather is one slice.
-        cells = {(int(child_level_t[f]), int(child_pos_t[f])) for f in range(F_n)}
-        for (l_c, j_c) in cells:
-            if l_c < 1:                           # root child: no parent leak
-                continue
-            sel = (child_level_t == l_c) & (child_pos_t == j_c)
-            feats = feat_ar[sel]
-            sr = start_row.get((l_c, j_c))
-            nv = V_child.get((l_c, j_c))
-            if sr is None or nv is None:
-                continue
-            jf = joint_fire_count[sr:sr + nv, p_idx, :]      # (nv, F)
-            c_i = jf[:, feats].argmax(dim=0)                 # (n_sel,) value
-            for k, f in enumerate(feats.tolist()):
-                out_ln[f] = leak_norm.get((l_c, j_c, int(c_i[k])), float('nan'))
-        return out_ln
-
-    # per-feature gather of H at an arbitrary cell needs a (level,pos)->group row
-    # map. A no-parent sentinel row (-1) is masked out before gathering.
-    def _cell_to_grow(level_t, pos_t):
-        """[F] long: group-index of each (level,pos), or -1 if absent."""
-        rows = torch.full_like(level_t, -1)
-        for k, gi in group_index.items():
-            m = (level_t == k[0]) & (pos_t == k[1])
-            rows[m] = gi
-        return rows
+    P = core['P']
+    cand_sets = core['cand_sets']
+    cand_href = core['cand_href']
 
     out = {
-        'lambda_l1': float(art.get('lambda_l1') or 0.0),
-        'layer_id': layer_id, 'P': P, 's': s, 'L': L,
-        'mode': art.get('mode', ''), 'pooled': pooled,
-        'matched_level': matched_level,
-        'positions': [], 'parent_group': [],
+        'lambda_l1': core['lambda_l1'],
+        'layer_id': core['layer_id'], 'P': P, 's': core['s'], 'L': core['L'],
+        'mode': core['mode'], 'pooled': core['pooled'],
+        'matched_level': core['matched_level'],
+        'positions': list(core['positions']),
+        'parent_group': list(core['parent_group']),
         'stored_H_bar_fire': [],
     }
     for sc in SCHEMES:
@@ -311,63 +132,23 @@ def process_artifact(art, leak_norm, alpha, collect_ratios=False):
     stored_fire = art.get('H_bar_fire')
 
     for p_idx in range(P):
-        p_real = int(token_positions[p_idx].item())
-        if pooled:
-            parent_key = (0, 0)
-        else:
-            matched_j = p_real // (s ** (1 + layer_id))
-            parent_key = (matched_level, matched_j)
-        parent_gidx = group_index.get(parent_key)
-        out['positions'].append(p_real)
-        out['parent_group'].append(parent_key)
+        rec = core['per_position'][p_idx]
         out['stored_H_bar_fire'].append(
             float(stored_fire[p_idx]) if stored_fire is not None else float('nan'))
 
-        # per-candidate min and argmin (NaN-aware; dead features stay NaN).
-        H_min = {}
-        argmins = {}
-        for cand, gidxs in cand_idxs.items():
-            H_cand = H_per_feature[gidxs, p_idx, :]              # [G, F]
-            mn, am = torch_nanmin(H_cand, dim=0)                 # [F], [F]
-            H_min[cand] = mn
-            argmins[cand] = am
-        H_parent = H_per_feature[parent_gidx, p_idx, :]          # [F]
+        H_min = rec['H_min']
+        argmins = rec['argmin']
+        H_parent = rec['H_parent']
+        H_ref = rec['parent_href']
+        ref_ok = math.isfinite(H_ref) and (H_ref > 0)
 
-        H_ref = H_theoretical.get(parent_key, float('nan'))
-        ref_ok = (H_ref > 0) and math.isfinite(H_ref)
-
-        # --- split check (whole-tree child -> its tree-parent) -------------
-        wt_am = argmins['whole_tree']                            # [F] rows
-        child_level = wt_level[wt_am]                            # [F]
-        child_pos = wt_pos[wt_am]                                # [F]
-        # value-specific leak: condition on the value c_i each feature fires
-        # most on (argmax joint_fire_count over the child cell's values).
-        leakN = _value_specific_leakN(child_level, child_pos, p_idx)  # [F] norm
-        can_reassign = child_level >= 1                          # root has no parent
-        par_level = child_level - 1
-        par_pos = child_pos // s
-        par_grow = _cell_to_grow(par_level, par_pos)             # [F] (-1 = none)
-        # gather H at each feature's parent cell; masked rows use row 0 then NaN
-        safe_grow = par_grow.clamp_min(0)
-        H_par_at = H_per_feature[safe_grow, p_idx,
-                                 torch.arange(H_per_feature.shape[2])]  # [F]
-        H_par_at = torch.where(par_grow >= 0, H_par_at,
-                               torch.full_like(H_par_at, float('nan')))
-        # H_theoretical at each parent cell (per feature)
-        href_par = torch.tensor(
-            [H_theoretical.get((int(par_level[f]), int(par_pos[f])), float('nan'))
-             for f in range(par_level.shape[0])], dtype=torch.float64)
-        href_par = torch.where(href_par > 0, href_par,
-                               torch.full_like(href_par, float('nan')))
-        ratio = (H_par_at.double() / href_par) / leakN          # [F]
-        reassign = can_reassign & torch.isfinite(ratio) & (ratio < alpha)
-
-        # final assigned cell per feature: parent if reassigned else child.
-        child_href = cand_href['whole_tree'][wt_am]             # [F]
-        final_entropy = torch.where(reassign, H_par_at.double(),
-                                    H_min['whole_tree'].double())
-        final_href = torch.where(reassign, href_par, child_href)
-        final_level = torch.where(reassign, par_level, child_level)
+        child_level = rec['child_level']
+        ratio = rec['ratio']
+        reassign = rec['reassign']
+        final_entropy = rec['final_entropy']
+        final_href = rec['final_href']
+        final_level = rec['final_level']
+        can_reassign = child_level >= 1
 
         for sc in SCHEMES:
             w = weights_for_scheme(sc, firing_rate[p_idx], baseline_mean[p_idx],

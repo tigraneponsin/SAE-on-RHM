@@ -7,9 +7,11 @@ Two-stage algorithm:
      nodes -- embeddings, errors, logits -- naturally have row sum 0 and
      stay zero after a clamped-min eps guard).
   3. Compute the indirect influence
-        B = A + A^2 + ... + A^D     where D = K + 2
-     using the polynomial form. With a strict DAG (every edge advances the
-     virtual layer index by at least one), A is nilpotent and the sum is
+        B = A + A^2 + ... + A^D     where D = K + 1
+     using the polynomial form. K + 1 is the longest path length (in edges):
+     embedding (virtual layer -1) -> feat 0 -> ... -> feat K-1 -> logit
+     (virtual layer K) is K + 1 hops. With a strict DAG (every edge advances
+     the virtual layer index by at least one), A is nilpotent and the sum is
      exact in <= D iterations.
   4. logit_weights vector w_L of shape [N_nodes]:
         - sink_mode='softmax_logits': softmax(logits)[c] at each logit node.
@@ -307,7 +309,9 @@ def prune_indirect_influence(
     # ---- Build adjacency and influence ----
     W, idx_of, ordered_keys = _build_adjacency(nodes, edges, K, device, dtype)
     A = _row_normalize_abs(W)
-    max_depth = K + 2
+    # Longest path embedding -> feat 0 -> ... -> feat K-1 -> logit is K + 1
+    # edges, so the polynomial B = A + ... + A^{K+1} captures every path.
+    max_depth = K + 1
     B = _indirect_influence(A, max_depth)
 
     w_logit = _logit_weights(ordered_keys, logits, y_true, sink_mode, device, dtype)

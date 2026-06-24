@@ -50,6 +50,7 @@ from circuit_tracing.attribution import (
     edges_pooled_final_to_logits_per_class,
 )
 from circuit_tracing.labels import build_labels_per_layer
+from absorption import leak_table_from_rules
 from circuit_tracing.dag import (
     assemble_edges, build_node_table, to_networkx,
 )
@@ -199,6 +200,17 @@ def build_parser() -> argparse.ArgumentParser:
                         'Auto-detected from the last SAE\'s sae_activation_source '
                         '== mean_pooled; this flag forces it on and is validated '
                         'against the SAEs.')
+    p.add_argument('--label_alpha', type=float, default=0.5,
+                   help='Absorption reassignment threshold for the '
+                        '"reassigned" label scheme (default 0.5). A feature is '
+                        'reassigned from its whole-tree child cell up to the '
+                        'tree-parent when H(parent|f)/H(parent|child=c_i) < '
+                        'label_alpha.')
+    p.add_argument('--label_primary', default='reassigned',
+                   choices=['parent', 'level', 'whole_tree', 'reassigned'],
+                   help='Which label scheme the back-compat top-level node/'
+                        'group label fields mirror (default reassigned). All '
+                        'four schemes are always stored under node["schemes"].')
     return p
 
 
@@ -514,8 +526,21 @@ def prepare_pipeline(args) -> dict:
     print(f'  Final-layer per-class edges: {len(feat_to_logit)} feat->logit, '
           f'{len(err_to_logit)} err->logit, {num_classes} classes')
 
-    # ---- 12. Build labels ----
-    labels_per_layer = build_labels_per_layer(eval_artifacts, s=s, L=L)
+    # ---- 12. Build labels (all four schemes) ----
+    # Value-specific structural leak table for the absorption ("reassigned")
+    # scheme, built from the rules we already loaded (rules-consistency was
+    # checked in step 4), per layer (each uses its artifact's H_theoretical).
+    label_alpha = float(getattr(args, 'label_alpha', 0.5))
+    label_primary = getattr(args, 'label_primary', 'reassigned')
+    leak_norms = []
+    for art in eval_artifacts:
+        leak_norm, _rows = leak_table_from_rules(
+            rules, art['rhm'], art['H_theoretical'])
+        leak_norms.append(leak_norm)
+    labels_per_layer = build_labels_per_layer(
+        eval_artifacts, s=s, L=L, leak_norms=leak_norms,
+        alpha=label_alpha, primary=label_primary,
+    )
 
     # ---- 13. Build node table and edges, prune ----
     nodes = build_node_table(
@@ -524,6 +549,7 @@ def prepare_pipeline(args) -> dict:
         logits=anchors.logits, y_true=y_true,
         v=int(cfg.num_features), n=int(cfg.num_classes),
         pooled_last_layer=pooled_last_layer,
+        primary=label_primary,
     )
     all_edges = assemble_edges(
         layer_pairs_feat, layer_pairs_err,
@@ -571,6 +597,8 @@ def prepare_pipeline(args) -> dict:
         'eval_seed': args.eval_seed,
         'tree_row': tree_row,
         'pooled_last_layer': pooled_last_layer,
+        'label_alpha': label_alpha,
+        'label_primary': label_primary,
     }
 
 
@@ -636,6 +664,7 @@ def finalize_one_config(prepared: dict,
     grouped_nodes, grouped_edges, group_membership = group_by_signature(
         nodes=nodes, pruned_edges=pruned_edges, K=K, s=s, L=L,
         v=int(cfg.num_features), n=int(cfg.num_classes),
+        primary=prepared.get('label_primary', 'reassigned'),
     )
     n_groups = sum(1 for k in grouped_nodes if k[0] == 'group')
     n_multi_groups = sum(

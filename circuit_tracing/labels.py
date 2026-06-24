@@ -1,14 +1,27 @@
 """Per-(layer, position, feature) latent labels from .sae_eval.pt artifacts.
 
-For each (layer k, position p, feature f), the label is the most likely
-parent latent value given that the feature fires:
+For each (layer k, position p, feature f) we compute the latent label under
+FOUR schemes, all from the same per-feature artifact data via the shared core
+in scripts/sae_sweep/absorption.py:
 
-    label_value = argmax_v  P(latent_value = v | feature_f fires)
+  parent      : the block-aligned parent latent cell (level = L-1-k,
+                position = p // s^(1+k)). Value = argmax_v P(value | f fires)
+                at that cell. No argmin -- the locality assumption, identical to
+                the original labeler.
+  level       : argmin entropy over the matched-level cells, then value =
+                argmax_v P(value | f fires) at the winning cell.
+  whole_tree  : argmin entropy over ALL (level, position) cells (the
+                unconstrained "child"), then value at the winning cell.
+  reassigned  : whole_tree, but when the absorption ratio < alpha the primary
+                label is bumped up to the child's tree-parent cell
+                (level-1, pos//s) and its value; the child cell/value is kept as
+                a precision tag.
 
-P(value | fire) is computed as joint_fire_count / firing_count via
-scripts.sae_tree_reconstruction.run._build_cond_prob.
+Each (p, f) entry carries a `schemes` dict with one record per scheme, plus
+top-level back-compat fields that mirror a chosen `primary` scheme so existing
+consumers (dag.build_node_table, the visualizers) keep working unchanged.
 
-The relevant (level, position) at which to evaluate this is
+The relevant block-aligned (level, position) is
     level = L - 1 - k
     parent_position = p // s ** (1 + k)
 where (s, L) are the RHM branching factor and depth.
@@ -17,11 +30,25 @@ where (s, L) are the RHM branching factor and depth.
 from __future__ import annotations
 
 import math
+import sys
+from pathlib import Path
 
 import torch
 
-# Reuse the existing implementation to avoid drift.
-from scripts.sae_tree_reconstruction.run import _build_cond_prob
+# The shared per-feature labeling core lives under scripts/sae_sweep. Make it
+# importable the same way circuit_trace.py makes scripts.* importable.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+for _p in (str(_REPO_ROOT),
+           str(_REPO_ROOT / 'scripts' / 'sae_sweep'),
+           str(_REPO_ROOT / 'scripts' / 'common')):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from absorption import per_feature_labels, _ArtifactTables  # noqa: E402
+
+SCHEME_NAMES = ('parent', 'level', 'whole_tree', 'reassigned')
+DEFAULT_PRIMARY = 'reassigned'
+DEFAULT_ALPHA = 0.5
 
 
 def parent_position(p: int, k: int, s: int) -> int:
@@ -36,139 +63,190 @@ def parent_level(k: int, L: int) -> int:
     return int(L) - 1 - int(k)
 
 
-def build_labels(eval_artifact: dict, layer_id: int, s: int, L: int) -> dict:
-    """Per-(p, f) label table for one SAE eval artifact.
+def _norm_entropy(h, href):
+    """H / H_theoretical clipped to [0, 1]; None when undefined/dead."""
+    if h is None or href is None:
+        return None
+    h = float(h)
+    href = float(href)
+    if not (math.isfinite(h) and math.isfinite(href) and href > 0):
+        return None
+    v = h / href
+    if v < 0.0:
+        v = 0.0
+    elif v > 1.0:
+        v = 1.0
+    return v
+
+
+def _empty_scheme(level, position):
+    """A dead/undefined scheme record (feature didn't fire or no cell)."""
+    return {
+        'level': level, 'position': position,
+        'value': None, 'p_value_given_fire': float('nan'),
+        'normalized_entropy': None,
+        'value_distribution': None, 'values': None,
+    }
+
+
+def build_labels(eval_artifact: dict, layer_id: int, s: int, L: int,
+                 leak_norm: dict, alpha: float = DEFAULT_ALPHA,
+                 primary: str = DEFAULT_PRIMARY) -> dict:
+    """Per-(p, f) label table for one SAE eval artifact, all four schemes.
+
+    leak_norm is the value-specific structural leak table
+    (absorption.leak_table_from_rules / resolve_leak_table); required for the
+    'reassigned' scheme. alpha is the absorption reassignment threshold.
 
     Returns:
         dict[(p, f)] -> {
-            'value': int | None,
-            'p_value_given_fire': float,
-            'level': int,
-            'parent_position': int,
             'firing_count': int,
-            'value_distribution': FloatTensor[V_g] | None,
-            'values': LongTensor[V_g] | None,
-            'normalized_entropy': float | None,
+            'schemes': {scheme -> {
+                'level': int, 'position': int,
+                'value': int | None, 'p_value_given_fire': float,
+                'normalized_entropy': float | None,
+                'value_distribution': FloatTensor[V_g] | None,
+                'values': LongTensor[V_g] | None,
+                # 'reassigned' scheme only:
+                'reassigned': bool, 'ratio': float,
+                'child_level': int, 'child_position': int,
+                'child_value': int | None,
+            }},
+            # back-compat top-level fields mirror `primary`:
+            'value', 'p_value_given_fire', 'level', 'parent_position',
+            'value_distribution', 'values', 'normalized_entropy',
         }
 
-    `value_distribution` is the full conditional P(value | feature fires)
-    vector (length V_g, the number of observed values in the (level,
-    parent_position) group), and `values` is the matching index tensor so
-    callers can lift to the full parent-level vocab. Both are None for
-    dead features.
-
-    `normalized_entropy` is `H_per_feature[(level, parent_position), p, f]
-    / H_theoretical[(level, parent_position)]`, clipped to [0, 1], or None
-    if the reference is non-positive / non-finite, or the feature is dead.
-
-    Uses the eval artifact's joint_fire_count, firing_count, index_layout,
-    H_per_feature, and H_theoretical. Requires `--with-per-feature` and
-    `--with-entropy` (joint_fire_and_entropy flag) when the artifact was
-    produced.
+    The 'parent' scheme reproduces the original (locality) labeler exactly.
     """
-    if 'joint_fire_count' not in eval_artifact or 'firing_count' not in eval_artifact:
-        raise ValueError(
-            f'eval artifact for layer {layer_id} is missing joint_fire_count '
-            f'or firing_count. Re-run the eval with per_feature and '
-            f'joint_fire_and_entropy flags enabled.'
-        )
+    if primary not in SCHEME_NAMES:
+        raise ValueError(f'unknown primary scheme {primary!r}; '
+                         f'choose from {SCHEME_NAMES}')
 
-    cond = _build_cond_prob(eval_artifact)  # (lvl, pos) -> {values, cond_prob [V_g, P, F]}
+    core = per_feature_labels(eval_artifact, leak_norm, alpha)
+    T = _ArtifactTables(eval_artifact, leak_norm)
     firing = eval_artifact['firing_count'].long()  # [P, F]
-    # H_per_feature and H_theoretical are optional: when the artifact was
-    # produced without --with-entropy, fall back to normalized_entropy=None
-    # for every feature (visualizers render the gray fallback). All other
-    # fields still populate.
-    H_per_feature = eval_artifact.get('H_per_feature')   # [num_groups, P, F] or None
-    H_theoretical = eval_artifact.get('H_theoretical')   # dict or None
-    index_layout = eval_artifact['index_layout']
-    group_index = {
-        (int(g['level']), int(g['position'])): idx
-        for idx, g in enumerate(index_layout)
-    }
-    has_entropy = (H_per_feature is not None) and (H_theoretical is not None)
+    P = core['P']
+    Fdim = T.F
 
-    P, F = firing.shape
     target_level = parent_level(layer_id, L)
 
     out: dict = {}
-    for p in range(P):
-        target_pos = parent_position(p, layer_id, s)
-        key = (target_level, target_pos)
-        if key not in cond:
-            # Either the (level, position) was empty in the eval set, or the
-            # artifact came from trees missing this level. Skip silently.
-            continue
-        group = cond[key]
-        values_t = group['values'].clone().long()  # [V_g]
-        cp = group['cond_prob']  # [V_g, P, F] (NaN for dead features)
-        if values_t.numel() == 0:
-            continue
-        cp_pf = cp[:, p, :]  # [V_g, F]
+    for p_idx in range(P):
+        rec = core['per_position'][p_idx]
+        p_real = core['positions'][p_idx]
+        parent_key = core['parent_group'][p_idx]  # (level, pos) block-aligned
 
-        g_idx = group_index.get(key)
-        if has_entropy:
-            H_ref = float(H_theoretical.get(key, float('nan')))
-            H_ref_ok = math.isfinite(H_ref) and H_ref > 0
-        else:
-            H_ref = float('nan')
-            H_ref_ok = False
+        # Per-scheme winning cell (level, pos) and entropy/href, all [F] except
+        # parent which is a single cell shared across features at this position.
+        # Distributions are gathered with dist_at_cell at each scheme's cell.
+        parent_lvl_t = torch.full((Fdim,), int(parent_key[0]), dtype=torch.long)
+        parent_pos_t = torch.full((Fdim,), int(parent_key[1]), dtype=torch.long)
 
-        def _norm_entropy(f_idx: int) -> float | None:
-            if not has_entropy or g_idx is None or not H_ref_ok:
-                return None
-            h = float(H_per_feature[g_idx, p, f_idx].item())
-            if not math.isfinite(h):
-                return None
-            v = h / H_ref
-            if v < 0.0:
-                v = 0.0
-            elif v > 1.0:
-                v = 1.0
-            return v
+        dist_by_scheme = {
+            'parent': T.dist_at_cell(parent_lvl_t, parent_pos_t, p_idx),
+            'level': T.dist_at_cell(rec['level_cell_level'],
+                                    rec['level_cell_pos'], p_idx),
+            'whole_tree': T.dist_at_cell(rec['child_level'],
+                                         rec['child_pos'], p_idx),
+            'reassigned': T.dist_at_cell(rec['final_level'],
+                                         rec['final_pos'], p_idx),
+        }
 
-        # NaN columns at this (p, f) mean firing_count[p, f] == 0 -> dead.
-        for f in range(F):
-            fc = int(firing[p, f].item())
-            if fc == 0:
-                out[(p, f)] = {
-                    'value': None,
-                    'p_value_given_fire': float('nan'),
-                    'level': target_level,
-                    'parent_position': target_pos,
-                    'firing_count': 0,
-                    'value_distribution': None,
-                    'values': None,
-                    'normalized_entropy': None,
-                }
-                continue
-            col = cp_pf[:, f]  # [V_g] float64, sums to <=1 (1 if all values were observed)
-            if torch.isnan(col).any():
-                out[(p, f)] = {
-                    'value': None,
-                    'p_value_given_fire': float('nan'),
-                    'level': target_level,
-                    'parent_position': target_pos,
-                    'firing_count': fc,
-                    'value_distribution': None,
-                    'values': None,
-                    'normalized_entropy': None,
-                }
-                continue
-            v_idx = int(col.argmax().item())
-            out[(p, f)] = {
-                'value': int(values_t[v_idx].item()),
-                'p_value_given_fire': float(col[v_idx].item()),
-                'level': target_level,
-                'parent_position': target_pos,
+        # Per-scheme entropy + href tensors ([F]) for normalized_entropy.
+        H_parent = rec['H_parent']
+        href_parent = rec['parent_href']
+        ent_by_scheme = {
+            'parent': (H_parent, torch.full((Fdim,), float(href_parent),
+                                            dtype=torch.float64)),
+            'level': (rec['level_min'], rec['level_href'].double()),
+            'whole_tree': (rec['wt_min'], rec['child_href'].double()),
+            'reassigned': (rec['final_entropy'], rec['final_href'].double()),
+        }
+
+        cell_by_scheme = {
+            'parent': (parent_lvl_t, parent_pos_t),
+            'level': (rec['level_cell_level'], rec['level_cell_pos']),
+            'whole_tree': (rec['child_level'], rec['child_pos']),
+            'reassigned': (rec['final_level'], rec['final_pos']),
+        }
+
+        reassign = rec['reassign']
+        ratio = rec['ratio']
+        child_level = rec['child_level']
+        child_pos = rec['child_pos']
+        child_value = rec['child_value']
+
+        for f in range(Fdim):
+            fc = int(firing[p_idx, f].item())
+            schemes = {}
+            for sc in SCHEME_NAMES:
+                lvl_t, pos_t = cell_by_scheme[sc]
+                lvl = int(lvl_t[f].item())
+                pos = int(pos_t[f].item())
+                if fc == 0:
+                    schemes[sc] = _empty_scheme(lvl, pos)
+                else:
+                    dist = dist_by_scheme[sc].get(f)
+                    H_t, href_t = ent_by_scheme[sc]
+                    ne = _norm_entropy(float(H_t[f].item()),
+                                       float(href_t[f].item()))
+                    if dist is None:
+                        schemes[sc] = {
+                            'level': lvl, 'position': pos,
+                            'value': None, 'p_value_given_fire': float('nan'),
+                            'normalized_entropy': ne,
+                            'value_distribution': None, 'values': None,
+                        }
+                    else:
+                        # col is float64; pgf is read from it (matching the
+                        # original labeler), value_distribution stored float32.
+                        values_t, col = dist
+                        vi = int(col.argmax().item())
+                        schemes[sc] = {
+                            'level': lvl, 'position': pos,
+                            'value': int(values_t[vi].item()),
+                            'p_value_given_fire': float(col[vi].item()),
+                            'normalized_entropy': ne,
+                            'value_distribution': col.float().clone(),
+                            'values': values_t.clone(),
+                        }
+                # reassigned-only precision tags.
+                if sc == 'reassigned':
+                    schemes[sc]['reassigned'] = bool(reassign[f].item()) \
+                        if fc != 0 else False
+                    schemes[sc]['ratio'] = float(ratio[f].item())
+                    schemes[sc]['child_level'] = int(child_level[f].item())
+                    schemes[sc]['child_position'] = int(child_pos[f].item())
+                    cv = int(child_value[f].item())
+                    schemes[sc]['child_value'] = cv if (fc != 0 and cv >= 0) else None
+
+            prim = schemes[primary]
+            out[(p_idx, f)] = {
                 'firing_count': fc,
-                'value_distribution': col.float().clone(),
-                'values': values_t.clone(),
-                'normalized_entropy': _norm_entropy(f),
+                'schemes': schemes,
+                # back-compat top-level mirror of the primary scheme.
+                'value': prim['value'],
+                'p_value_given_fire': prim['p_value_given_fire'],
+                'level': prim['level'],
+                'parent_position': prim['position'],
+                'value_distribution': prim['value_distribution'],
+                'values': prim['values'],
+                'normalized_entropy': prim['normalized_entropy'],
             }
     return out
 
 
-def build_labels_per_layer(eval_artifacts: list[dict], s: int, L: int) -> list[dict]:
-    """Vectorize build_labels over a list of artifacts (one per layer)."""
-    return [build_labels(art, k, s, L) for k, art in enumerate(eval_artifacts)]
+def build_labels_per_layer(eval_artifacts: list[dict], s: int, L: int,
+                           leak_norms: list[dict],
+                           alpha: float = DEFAULT_ALPHA,
+                           primary: str = DEFAULT_PRIMARY) -> list[dict]:
+    """Vectorize build_labels over a list of artifacts (one per layer).
+
+    leak_norms is one leak table per layer (they are identical across a sweep,
+    but each artifact's H_theoretical is used for normalization, so we accept a
+    per-layer list; callers may pass the same table repeated).
+    """
+    return [build_labels(art, k, s, L, leak_norms[k], alpha=alpha,
+                         primary=primary)
+            for k, art in enumerate(eval_artifacts)]

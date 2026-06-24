@@ -49,7 +49,10 @@
       "Bash(xargs ls -la)",
       "Bash(bash slurm/intervention/Job_ablate_nores_v16_L3_m16.sh)",
       "Bash(squeue -u ponsin --format=\"%.10i %.15j %.8T %.10M %.5D %R\")",
-      "Bash(squeue -u ponsin -j 3653615,3653616,3653617)"
+      "Bash(squeue -u ponsin -j 3653615,3653616,3653617)",
+      "Bash(grep -vE \"circuit_tracing/|\\\\.pyc|__pycache__|\\\\.md$\")",
+      "Bash(python -)",
+      "Bash(squeue -j 3701375)"
     ],
     "additionalDirectories": [
       "/tmp"

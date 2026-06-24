@@ -36,6 +36,9 @@ from circuit_tracing.visualize_interactive import (
 )
 from circuit_tracing.notation import sae_row_label, report_level
 
+# Label schemes the scheme slider cycles through (order = slider step order).
+SCHEMES = ('parent', 'level', 'whole_tree', 'reassigned')
+
 
 def _subdir_name(node_th: float, edge_th: float) -> str:
     return f'node_{node_th:.4f}__edge_{edge_th:.4f}'
@@ -63,6 +66,7 @@ _JS_SHIM = r"""
     var layout = figEl.layout || {};
     var cur_i = _activeIdx(layout, 0);  // node_threshold slider
     var cur_j = _activeIdx(layout, 1);  // edge_threshold slider
+    var cur_sc = _activeIdx(layout, 2); // label-scheme slider
     var total = figEl.data ? figEl.data.length : 0;
     var visible = new Array(total);
     var idxs = new Array(total);
@@ -72,7 +76,11 @@ _JS_SHIM = r"""
       if (m.cell === 'shared') {
         visible[k] = true;
       } else if (Array.isArray(m.cell)) {
-        visible[k] = (m.cell[0] === cur_i && m.cell[1] === cur_j);
+        var cellOk = (m.cell[0] === cur_i && m.cell[1] === cur_j);
+        // Edge traces are scheme-independent (scheme === 'any'); node traces
+        // carry a numeric scheme index and show only for the active scheme.
+        var schemeOk = (m.scheme === 'any') || (m.scheme === cur_sc);
+        visible[k] = cellOk && schemeOk;
       } else {
         visible[k] = true;
       }
@@ -84,9 +92,12 @@ _JS_SHIM = r"""
     if (status && layout.meta && layout.meta.cells_by_idx) {
       var key = cur_i + ',' + cur_j;
       var c = layout.meta.cells_by_idx[key];
+      var schemes = (layout.meta && layout.meta.schemes) || [];
+      var schemeName = schemes[cur_sc] || ('scheme ' + cur_sc);
       if (c) {
         status.textContent =
           'cell (i=' + cur_i + ', j=' + cur_j + ')  |  ' +
+          'label scheme = ' + schemeName + '  |  ' +
           'n_th = ' + Number(c.node_threshold).toFixed(3) + ',  ' +
           'e_th = ' + Number(c.edge_threshold).toFixed(3) + '  |  ' +
           'n_features_post = ' + c.n_features_post + ',  ' +
@@ -200,20 +211,26 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
                         if k[0] == 'logit' and 'prob' in nodes[k]]
             p_ref = max(p_values) if p_values else 1.0
 
-            initial_visible = (i == 0 and j == 0)
+            initial_cell = (i == 0 and j == 0)
+            # Edge traces are scheme-independent (topology doesn't change with
+            # the label scheme); tag them scheme='any' so the shim shows them
+            # for the active cell regardless of the scheme slider.
             for tr in _edge_traces(pruned_edges_u, pos_u, f'u_{i}_{j}'):
-                tr.meta = {'cell': [i, j]}
-                tr.visible = initial_visible
+                tr.meta = {'cell': [i, j], 'scheme': 'any'}
+                tr.visible = initial_cell
                 tr.showlegend = False
                 fig.add_trace(tr, row=1, col=1)
-            for tr in _node_traces_ungrouped(
-                nodes, kept_u, pos_u, K=K, p_ref=p_ref, z_ref=z_ref,
-                report=report_notation,
-            ):
-                tr.meta = {'cell': [i, j]}
-                tr.visible = initial_visible
-                tr.showlegend = False
-                fig.add_trace(tr, row=1, col=1)
+            # Node traces: one set per scheme; only the active scheme is shown.
+            for si, scheme in enumerate(SCHEMES):
+                vis = initial_cell and (si == 0)
+                for tr in _node_traces_ungrouped(
+                    nodes, kept_u, pos_u, K=K, p_ref=p_ref, z_ref=z_ref,
+                    report=report_notation, scheme=scheme,
+                ):
+                    tr.meta = {'cell': [i, j], 'scheme': si}
+                    tr.visible = vis
+                    tr.showlegend = False
+                    fig.add_trace(tr, row=1, col=1)
 
             # Grouped panel.
             kept_g, grouped_edges_g = _select_kept_grouped(
@@ -230,18 +247,20 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
                 z_ref_g = 1.0
 
             for tr in _edge_traces(grouped_edges_g, pos_g, f'g_{i}_{j}'):
-                tr.meta = {'cell': [i, j]}
-                tr.visible = initial_visible
+                tr.meta = {'cell': [i, j], 'scheme': 'any'}
+                tr.visible = initial_cell
                 tr.showlegend = False
                 fig.add_trace(tr, row=2, col=1)
-            for tr in _node_traces_grouped(
-                g_nodes, kept_g, pos_g, K=K, p_ref=p_ref, z_ref=z_ref_g,
-                report=report_notation,
-            ):
-                tr.meta = {'cell': [i, j]}
-                tr.visible = initial_visible
-                tr.showlegend = False
-                fig.add_trace(tr, row=2, col=1)
+            for si, scheme in enumerate(SCHEMES):
+                vis = initial_cell and (si == 0)
+                for tr in _node_traces_grouped(
+                    g_nodes, kept_g, pos_g, K=K, p_ref=p_ref, z_ref=z_ref_g,
+                    report=report_notation, scheme=scheme,
+                ):
+                    tr.meta = {'cell': [i, j], 'scheme': si}
+                    tr.visible = vis
+                    tr.showlegend = False
+                    fig.add_trace(tr, row=2, col=1)
 
     # ---- Sliders ----
     # `method='skip'` -> Plotly only updates `active`; the JS shim handles
@@ -251,6 +270,9 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
     ]
     edge_steps = [
         dict(method='skip', label=f'{v:.2f}', args=[]) for v in edge_thresholds
+    ]
+    scheme_steps = [
+        dict(method='skip', label=sc, args=[]) for sc in SCHEMES
     ]
     # Stack the two sliders vertically beneath the bottom-right empty
     # cell. x, y, len are normalized figure coords. Right column spans
@@ -273,6 +295,14 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
             name='edge_th_slider',
             pad=dict(t=10, b=4),
             x=0.74, y=0.10, len=0.24,
+        ),
+        dict(
+            active=0, currentvalue=dict(prefix='label scheme = ',
+                                         font=dict(size=11)),
+            steps=scheme_steps,
+            name='scheme_slider',
+            pad=dict(t=10, b=4),
+            x=0.40, y=0.10, len=0.28,
         ),
     ]
 
@@ -319,7 +349,8 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
 
     # ---- Layout ----
     title = (
-        f'Sweep over node_threshold ({K1} steps) x edge_threshold ({K2} steps)  |  '
+        f'Sweep: node_threshold ({K1}) x edge_threshold ({K2}) x '
+        f'label_scheme ({len(SCHEMES)})  |  '
         f"input_idx={summary['input_idx']}  y_true={y_true}  y_pred={y_pred}  |  "
         f"bit_id_err={summary['bit_identity_max_err']:.2e}  "
         f"sink={summary['sink_mode']}"
@@ -336,6 +367,7 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
         meta=dict(
             node_thresholds=node_thresholds,
             edge_thresholds=edge_thresholds,
+            schemes=list(SCHEMES),
             cells_by_idx=cells_by_idx,
         ),
     )

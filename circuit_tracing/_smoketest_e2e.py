@@ -14,7 +14,40 @@ from pathlib import Path
 
 import torch
 
-from datasets.random_hierarchy_model import sample_rules, sample_trees
+from datasets.random_hierarchy_model import (
+    sample_rules, sample_trees, latent_prior,
+)
+
+
+def _h_theoretical_from_rules(rules, n, v):
+    """{(level, pos) -> H(marginal) in nats} from the RHM rules. Mirrors the
+    H_theoretical produced by the real eval so the labeler/leak table run."""
+    priors = latent_prior(rules, n, v)  # {level -> (s^level, V_level)}
+    out = {}
+    for level, marg in priors.items():
+        for pos in range(marg.shape[0]):
+            p = marg[pos].double()
+            out[(int(level), int(pos))] = float(
+                -torch.special.xlogy(p, p).sum().item())
+    return out
+
+
+def _h_per_feature_from_joint(joint_fire_count, firing_count, index_layout):
+    """[num_groups, P, F] conditional entropy H(latent_cell | f fires) in nats,
+    one group per index_layout entry. Mirrors the real eval's H_per_feature so
+    per_feature_labels can argmin over cells. Dead (firing==0) -> NaN."""
+    G = len(index_layout)
+    P, F = firing_count.shape
+    H = torch.full((G, P, F), float('nan'), dtype=torch.float64)
+    fc = firing_count.double()
+    for gi, g in enumerate(index_layout):
+        st, en = int(g['start']), int(g['end'])
+        jf = joint_fire_count[st:en].double()           # [V_g, P, F]
+        cp = jf / fc.clamp_min(1.0).unsqueeze(0)         # [V_g, P, F] P(value|fire)
+        ent = -torch.special.xlogy(cp, cp).sum(dim=0)    # [P, F]
+        ent = torch.where(fc > 0, ent, torch.full_like(ent, float('nan')))
+        H[gi] = ent
+    return H
 from models.transformer import (
     MeanClassificationTransformer, MeanClassificationTransformerNoResidual,
 )
@@ -36,10 +69,12 @@ from circuit_tracing.prune import prune_indirect_influence
 
 
 def _build_pseudo_eval_artifact(layer_id, latent_dim, N, s, L, n, v, m,
-                                  trees, model, sae, act_scale, device='cpu'):
+                                  trees, model, sae, act_scale, rules,
+                                  device='cpu'):
     """Replicate the bare minimum of stream_sae_eval to produce a dict with
-    joint_fire_count, firing_count, index_layout, rhm, latent_dim, layer_id,
-    rules_source, sae_rules_source. Used so build_labels_per_layer can run.
+    joint_fire_count, firing_count, index_layout, targets, H_theoretical, rhm,
+    latent_dim, layer_id, rules_source, sae_rules_source. Used so
+    build_labels_per_layer (all four schemes + leak table) can run.
     """
     from scripts.sae_eval.streaming import enumerate_targets
 
@@ -93,13 +128,19 @@ def _build_pseudo_eval_artifact(layer_id, latent_dim, N, s, L, n, v, m,
              'start': g['start'], 'end': g['end']}
             for g in index_layout
         ],
+        'targets': targets,
+        'token_positions': torch.arange(N, dtype=torch.long),
+        'H_theoretical': _h_theoretical_from_rules(rules, n, v),
+        'H_per_feature': _h_per_feature_from_joint(
+            joint_fire_count, firing_count, index_layout),
         'rules_source': 'artifact',
         'sae_rules_source': 'artifact',
     }
 
 
 def _build_pseudo_eval_artifact_pooled(layer_id, latent_dim, N, s, L, n, v, m,
-                                        trees, model, sae, act_scale, device='cpu'):
+                                        trees, model, sae, act_scale, rules,
+                                        device='cpu'):
     """Pooled-last-layer analogue of _build_pseudo_eval_artifact.
 
     Hooks model.ln_f, mean-pools over the sequence dim, and produces a
@@ -155,6 +196,12 @@ def _build_pseudo_eval_artifact_pooled(layer_id, latent_dim, N, s, L, n, v, m,
              'start': g['start'], 'end': g['end']}
             for g in index_layout
         ],
+        'targets': targets,
+        'token_positions': torch.tensor([-1], dtype=torch.long),
+        'H_theoretical': _h_theoretical_from_rules(rules, n, v),
+        'H_per_feature': _h_per_feature_from_joint(
+            joint_fire_count, firing_count, index_layout),
+        'mode': 'mean_pooled',
         'rules_source': 'artifact',
         'sae_rules_source': 'artifact',
     }
@@ -196,7 +243,7 @@ def main():
         art = _build_pseudo_eval_artifact(
             layer_id=k, latent_dim=saes[k].latent_dim, N=N, s=s, L=L,
             n=n_, v=v_, m=m_, trees=trees, model=model, sae=saes[k],
-            act_scale=act_scales[k],
+            act_scale=act_scales[k], rules=rules,
         )
         eval_artifacts.append(art)
 
@@ -256,11 +303,17 @@ def main():
     print(f'final layer per-class: {len(feat_to_logit)} feat->logit, '
           f'{len(err_to_logit)} err->logit, {n_} classes')
 
-    # Labels
+    # Labels (all four schemes)
     from circuit_tracing.labels import build_labels_per_layer
-    labels_per_layer = build_labels_per_layer(eval_artifacts, s=s, L=L)
+    from absorption import leak_table_from_rules
+    leak_norms = [leak_table_from_rules(rules, art['rhm'],
+                                        art['H_theoretical'])[0]
+                  for art in eval_artifacts]
+    labels_per_layer = build_labels_per_layer(
+        eval_artifacts, s=s, L=L, leak_norms=leak_norms)
     sample_label = next(iter(labels_per_layer[0].values()))
-    print(f'sample label at L0: {sample_label}')
+    print(f'sample label at L0 (parent scheme): '
+          f'{sample_label["schemes"]["parent"]}')
 
     # Build DAG
     nodes = build_node_table(
@@ -295,10 +348,16 @@ def main():
               f'features {diag["n_features_pre"]} -> {diag["n_features_post"]}, '
               f'completeness={diag["completeness_score"]:.3f}, '
               f'replacement={diag["replacement_score"]:.3f}')
-        # Embedding/error/logit nodes must never be pruned.
-        for k in nodes:
+        # Pure-IO nodes are never removed by the scoring stages, but the
+        # reachability trim (intentional) drops embed/err/logit nodes that end
+        # up on no surviving input->logit path (e.g. non-true-class logits in
+        # true_class mode). Assert at least one logit survives and that every
+        # kept pure-IO node is a real node table entry.
+        kept_logits = [k for k in kept_keys if k[0] == 'logit']
+        assert kept_logits, 'no logit node survived pruning'
+        for k in kept_keys:
             if k[0] in ('embed', 'err', 'logit'):
-                assert k in kept_keys, f'pure-input/output {k!r} was pruned'
+                assert k in nodes, f'kept {k!r} not in node table'
 
     # Round-trip save/load using the last (true_class) result.
     g = to_networkx(nodes, pruned)
@@ -364,12 +423,12 @@ def pooled_main():
         eval_artifacts.append(_build_pseudo_eval_artifact(
             layer_id=k, latent_dim=saes[k].latent_dim, N=N, s=s, L=L,
             n=n_, v=v_, m=m_, trees=trees, model=model, sae=saes[k],
-            act_scale=act_scales[k],
+            act_scale=act_scales[k], rules=rules,
         ))
     eval_artifacts.append(_build_pseudo_eval_artifact_pooled(
         layer_id=K - 1, latent_dim=saes[K - 1].latent_dim, N=N, s=s, L=L,
         n=n_, v=v_, m=m_, trees=trees, model=model, sae=saes[K - 1],
-        act_scale=act_scales[K - 1],
+        act_scale=act_scales[K - 1], rules=rules,
     ))
     assert eval_artifacts[K - 1]['firing_count'].shape[0] == 1, \
         eval_artifacts[K - 1]['firing_count'].shape
@@ -460,15 +519,23 @@ def pooled_main():
           f'{len(err_to_logit)} err->logit)')
 
     from circuit_tracing.labels import build_labels_per_layer
-    labels_per_layer = build_labels_per_layer(eval_artifacts, s=s, L=L)
-    # Pooled layer labels are keyed (0, f) and map to level 0 (root).
+    from absorption import leak_table_from_rules
+    leak_norms = [leak_table_from_rules(rules, art['rhm'],
+                                        art['H_theoretical'])[0]
+                  for art in eval_artifacts]
+    labels_per_layer = build_labels_per_layer(
+        eval_artifacts, s=s, L=L, leak_norms=leak_norms)
+    # Pooled layer labels are keyed (0, f); the parent (block-aligned) scheme
+    # maps to the root (level 0). Other schemes may argmin/reassign elsewhere,
+    # so check the parent scheme specifically.
     pooled_labels = labels_per_layer[K - 1]
     assert all(p == 0 for (p, _f) in pooled_labels.keys()), 'pooled label pos != 0'
     sample = next((lab for lab in pooled_labels.values()
-                   if lab['value'] is not None), None)
+                   if lab['schemes']['parent']['value'] is not None), None)
     if sample is not None:
-        assert sample['level'] == 0, sample['level']
-    print(f'pooled labels: {len(pooled_labels)} (all pos 0, level 0)')
+        assert sample['schemes']['parent']['level'] == 0, \
+            sample['schemes']['parent']['level']
+    print(f'pooled labels: {len(pooled_labels)} (all pos 0, parent scheme level 0)')
 
     nodes = build_node_table(
         z_list, labels_per_layer, s=s, L=L,

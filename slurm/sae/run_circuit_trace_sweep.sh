@@ -256,6 +256,15 @@ if [[ -n "${MODEL_VARIANT}" ]]; then
     EXTRA_ARGS+=(--model_variant "${MODEL_VARIANT}")
 fi
 
+# Label-scheme controls. All four schemes (parent / level / whole_tree /
+# reassigned) are always computed; LABEL_ALPHA is the absorption reassignment
+# threshold and LABEL_PRIMARY selects which scheme the top-level node/group
+# label fields mirror (the visualizer can switch among all four via its slider).
+LABEL_ALPHA="${LABEL_ALPHA:-0.5}"
+LABEL_PRIMARY="${LABEL_PRIMARY:-reassigned}"
+echo "LABEL_ALPHA:   ${LABEL_ALPHA}"
+echo "LABEL_PRIMARY: ${LABEL_PRIMARY}"
+
 set +e
 srun python -m circuit_tracing.circuit_trace_sweep \
     --train_output "${TRAIN_OUTPUT}" \
@@ -269,6 +278,8 @@ srun python -m circuit_tracing.circuit_trace_sweep \
     --sink_mode "${SINK_MODE}" \
     --node_thresholds "${NODE_THRESHOLDS[@]}" \
     --edge_thresholds "${EDGE_THRESHOLDS[@]}" \
+    --label_alpha "${LABEL_ALPHA}" \
+    --label_primary "${LABEL_PRIMARY}" \
     --device "${DEVICE}" \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 EXIT_CODE=$?
