@@ -14,6 +14,16 @@ by training sparse autoencoders (SAEs) on the residual stream of transformers
 trained on the Random Hierarchy Model (RHM), and by tracing per-input circuits
 through those SAEs.
 
+> **Level-numbering convention (important).** This document is written in the
+> CODE convention: RHM levels run top-down, root = level 0 and leaves =
+> level `L`, so `trees[l]` has shape `(N, s^l)` and a transformer block `k`
+> resolves level `L-1-k`. The report and every figure use the flipped "report"
+> convention (leaves = 0, root = `L`) via `report_level(l, L) = L - l` (see
+> `scripts/common/notation.py`); the README states the RHM in that convention.
+> All plotting/diagnostic CLIs accept `--report-notation` to relabel figures
+> without changing any computed value. Formulas below are in the code
+> convention unless a passage says otherwise.
+
 ---
 
 ## 1. The data: Random Hierarchy Model (RHM)
@@ -59,18 +69,23 @@ Inputs are integer token indices (`input_format='long'`) into an embedding
 table. The task is always classification (`mode='class'`): predict the root
 class `trees[0]` from the leaf sequence `trees[L]`.
 
-### 1.3 Transformer-layer <-> RHM-level correspondence (central hypothesis)
+### 1.3 Transformer-layer <-> RHM-level correspondence (working hypothesis)
 
-Transformer block k (0-based) is expected to resolve RHM level `L-1-k`
-(bottom-up composition). For a feature at layer k and leaf position p, the
-matched latent is:
+A natural expectation is that block k (0-based) resolves RHM level `L-1-k`
+(bottom-up composition). Under that expectation, a feature at layer k and leaf
+position p has a *matched* (default) latent to compare against:
 
 - level: `L - 1 - k`
 - ancestor position at that level: `p // s^(1+k)`
 - label vocabulary: `v` for levels 1..L-1, `n` for level 0.
 
-This mapping is hard-coded in the streaming-eval target layout, the tree
-reconstruction, and the circuit-tracing labels (`scripts/circuit_tracing/labels.py`).
+This matched latent is the default reference used by the streaming-eval target
+layout, the tree reconstruction, and the circuit-tracing labels
+(`scripts/circuit_tracing/labels.py`). It is a working hypothesis, not an
+assumption the analysis leans on: the entropy diagnostics deliberately relax it,
+also scoring each feature against other same-level cells, against every cell in
+the tree, and against a reassigned parent (see section 5), so the matched latent
+can be checked rather than taken for granted.
 
 ---
 
@@ -153,9 +168,8 @@ Actually used in experiments (from the Slurm launchers):
   `embedding_dim=512`, `num_heads=8`, `ffwd_size=4`, `test_size=32768`,
   AdamW, `loss_threshold=1e-3`, `max_epochs=20000`, seeds drawn at random per
   run and recorded in a manifest file next to the artifact.
-- Common hyperparameters: `dropout=0.1` (sometimes 0), `weight_decay=1e-4`
-  (empirically the sweet spot: minimizes dead SAE features downstream),
-  `lr=1e-3` (launcher default 5e-3; deeper L=5 runs used 1e-4),
+- Common hyperparameters: `dropout=0.1` (sometimes 0), `weight_decay=1e-4`,
+  `lr=1e-3`
   batch size 16..1280 depending on P.
 - Main (v, L, m, P) configurations trained for SAE work:
   - v=16, L=3, m=4,  P=12160 or 32768
@@ -273,7 +287,7 @@ lr = 1e-4 / batch 128 choice.
 ## 5. SAE evaluation pipeline (streaming eval)
 
 Entry point: `scripts/sae_eval/run.py` -> `scripts/sae_eval/streaming.py`.
-This is THE canonical evaluation: one streaming pass of a fresh RHM eval set
+This is the main evaluation entry point: one streaming pass of a fresh RHM eval set
 (defaults: `eval_size=32768`, `eval_seed=99999`, batch 512, optional
 de-duplication of repeated trees) through the frozen transformer + SAE,
 accumulating metric blocks gated by flags. Output: one `*.sae_eval.pt`
@@ -286,8 +300,8 @@ Metric blocks (flags, default off; the pipeline runs `--with-all`):
    counting only features whose mean activation exceeds 1% / 10% of the max
    feature mean (these thresholded counts are the headline sparsity metrics).
 2. Per-position versions of the above (`[P]` arrays over token positions) --
-   this is what exposes the dead-token phenomenon (positions whose features
-   all die layer by layer).
+   this is what surfaces the dead-token effect seen in these runs (positions
+   whose features die out layer by layer).
 3. Per-feature: baseline mean/std of each feature at each position, firing
    counts/rates, mean co-firing, decoder norms.
 4. Per-target conditional statistics: for every target latent (level,
@@ -299,8 +313,8 @@ Metric blocks (flags, default off; the pipeline runs `--with-all`):
    `H_bar_fire` (weights = firing rate), `H_bar_dec` (weights = mean weighted
    activation), `H_bar_raw` (activation / decoder norm), each also normalized
    by the THEORETICAL entropy H(Z_{l,j}) from `latent_prior`. Normalized
-   entropy ~ 0 means features are (near-)deterministic detectors of single
-   latent values; ~1 means uninformative.
+   entropy closer to 0 indicates features more selective for single latent
+   values; closer to 1, less informative about the latent.
 6. Classification impact (second pass): splice the SAE into the forward pass
    (replace the hooked activation by its reconstruction) and measure
    classification error and cross-entropy vs the clean baseline;
@@ -356,9 +370,10 @@ For each eval input, reconstruct the ENTIRE latent tree:
 Seed discipline: the script refuses to evaluate on seeds the transformer or
 SAE saw during training (override: `--allow_seed_overlap`).
 
-This tests whether the SAE feature dictionary, read through its conditional
-statistics, is sufficient to decode every internal RHM variable, i.e. whether
-the SAEs collectively recover the generative parse.
+This probes how well the SAE feature dictionary, read through its conditional
+statistics, can decode the internal RHM variables -- to what extent the SAEs
+recover the generative parse. The per-(level, position) accuracy tables report
+where this succeeds and where it does not, rather than asserting a result.
 
 ---
 
@@ -371,9 +386,9 @@ forward pass, possibly stacking interventions across layers, and reports
 classification accuracy (plus residual-norm tables). Experiments are specified
 in a JSON list; defaults eval_size 32768, seed 99999.
 
-Purpose: causal verification of the dead-token phenomenon -- if the
-transformer has killed the information at a position/layer, ablating it should
-not hurt accuracy.
+Purpose: a causal check of the dead-token effect -- if the transformer has
+already dropped the information at a position/layer, ablating it should not hurt
+accuracy.
 
 `scripts/sae_direct_analysis/` complements this on the SAE side: per-value
 top-K feature selectivity plots from the eval artifacts

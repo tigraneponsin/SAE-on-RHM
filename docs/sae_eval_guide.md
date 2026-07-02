@@ -1,7 +1,7 @@
 # SAE streaming eval: library + CLI guide
 
-The `scripts/sae_eval/` package is the single source of truth for SAE
-post-hoc evaluation on the Random Hierarchy Model. It replaces the old
+The `scripts/sae_eval/` package handles SAE post-hoc evaluation on the Random
+Hierarchy Model. It replaces the old
 `scripts/sae_direct_analysis/analyze_sae.py` and
 `scripts/sae_sweep/eval_sweep.py`.
 
@@ -250,9 +250,14 @@ notebook).
 
 ## Entropy-based specificity: what the numbers mean
 
-For a feature `f_i` hooked to layer `k` at SAE position `p`, the canonical
-RHM latent to consider is `Z_{l,j}` with `l = L - 1 - k` and
-`j = p // s^(1+k)`. Per-feature conditional entropy:
+For a feature `f_i` hooked to layer `k` at SAE position `p`, the default
+("matched") RHM latent to compare against is `Z_{l,j}` with `l = L - 1 - k` and
+`j = p // s^(1+k)`. This follows the layer-to-level working hypothesis (see
+`docs/project_pipelines.md` section 1.3); it is a reference, not an assumption.
+The diagnostics in `scripts/sae_sweep/entropy_diag.py` also score each feature
+against other same-level cells and against every cell in the tree, so a feature
+that is more selective for a different latent than its matched one is caught
+rather than hidden. Per-feature conditional entropy against a chosen latent:
 
 ```
 H_i = H(Z_{l,j} | F_i > 0) = -sum_z P(Z = z | F_i > 0) log P(Z = z | F_i > 0)
@@ -276,6 +281,6 @@ H_bar_dec  = sum_i E[f_i]     * H_i / sum_i E[f_i]
 
 Normalized versions divide by the theoretical `H(Z_{l,j})` computed from
 the RHM rules (via `latent_prior` / `latent_entropy` in
-`datasets/random_hierarchy_model.py`), so the score falls in `[0, 1]`
-where 0 means a perfectly selective feature and 1 means a feature whose
-firing gives no information about `Z`.
+`datasets/random_hierarchy_model.py`), so the score falls in `[0, 1]`: closer to
+0 indicates a feature more selective for `Z`, closer to 1 a feature whose firing
+carries little information about `Z`.
