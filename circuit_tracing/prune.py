@@ -331,24 +331,32 @@ def prune_indirect_influence(
         counts_pre[kind] = counts_pre.get(kind, 0) + 1
     n_edges_pre = len(edges)
 
-    # ---- Node pruning: prunable = features ----
-    feature_idx = [i for i, k in enumerate(ordered_keys) if nodes[k]['kind'] == 'feature']
-    feat_scores = node_score[feature_idx]  # [num_features]
-    total_feat = float(feat_scores.sum().item())
-    n_features_pre = len(feature_idx)
+    # ---- Node pruning: prunable = features AND errors ----
+    # Error nodes carry their own indirect influence (node_score gives the
+    # error->logit path mass, same scale as features), so they compete with
+    # features for the kept budget under one node_threshold. Embeddings and
+    # logits are pure inputs/sinks and are always kept.
+    prunable_idx = [i for i, k in enumerate(ordered_keys)
+                    if nodes[k]['kind'] in ('feature', 'error')]
+    prunable_scores = node_score[prunable_idx]
+    total_prunable = float(prunable_scores.sum().item())
+    n_features_pre = sum(1 for i in prunable_idx
+                         if nodes[ordered_keys[i]]['kind'] == 'feature')
 
-    if total_feat <= 0:
-        print('  WARNING: total prunable feature score is 0; keeping all features.')
-        keep_feat_local = torch.ones(len(feature_idx), dtype=torch.bool, device=device)
+    if total_prunable <= 0:
+        print('  WARNING: total prunable (feature+error) score is 0; '
+              'keeping all prunable nodes.')
+        keep_local = torch.ones(len(prunable_idx), dtype=torch.bool, device=device)
     else:
-        keep_feat_local = _keep_prefix(feat_scores, node_threshold)
-    kept_feature_indices = {feature_idx[i] for i in range(len(feature_idx)) if bool(keep_feat_local[i].item())}
+        keep_local = _keep_prefix(prunable_scores, node_threshold)
+    kept_prunable_indices = {prunable_idx[i] for i in range(len(prunable_idx))
+                             if bool(keep_local[i].item())}
 
     kept_node_indices = set()
     for i, k in enumerate(ordered_keys):
         kind = nodes[k]['kind']
-        if kind == 'feature':
-            if i in kept_feature_indices:
+        if kind in ('feature', 'error'):
+            if i in kept_prunable_indices:
                 kept_node_indices.add(i)
         else:
             kept_node_indices.add(i)
@@ -421,7 +429,9 @@ def prune_indirect_influence(
 
     # ---- completeness_score ----
     # Fraction of |signed_weight| on incoming edges to kept feature/logit
-    # nodes that comes from feature or embedding sources (not error).
+    # nodes that comes from feature or embedding sources (not error). Note:
+    # error-node pruning can raise this, since pruned error->target edges drop
+    # out of the denominator.
     target_kinds = {'feature', 'logit'}
     non_error_src_kinds = {'feature', 'embedding'}
     num_w = 0.0
@@ -495,6 +505,8 @@ def prune_indirect_influence(
         'n_edges_post': int(n_edges_post),
         'n_features_pre': int(n_features_pre),
         'n_features_post': int(counts_post.get('feature', 0)),
+        'n_errors_pre': int(counts_pre.get('error', 0)),
+        'n_errors_post': int(counts_post.get('error', 0)),
         'completeness_score': float(completeness_score),
         'replacement_score': float(replacement_score),
         'completeness_weight_convention': 'abs(signed_weight) on pruned subgraph',

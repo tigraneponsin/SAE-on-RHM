@@ -52,10 +52,21 @@
       "Bash(squeue -u ponsin -j 3653615,3653616,3653617)",
       "Bash(grep -vE \"circuit_tracing/|\\\\.pyc|__pycache__|\\\\.md$\")",
       "Bash(python -)",
-      "Bash(squeue -j 3701375)"
+      "Bash(squeue -j 3701375)",
+      "Bash(python -c \"import circuit_tracing.visualize_interactive; import circuit_tracing.notation; print\\('imports OK'\\)\")",
+      "Bash(python -c \"import circuit_tracing.visualize; print\\('visualize import OK'\\)\")",
+      "Bash(plotly_get_chrome)",
+      "Bash(python3 -m circuit_tracing.visualize_sweep --sweep_dir /work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_16_wdecay_0.0001_dropout_0.1_nores/circuit_sweeps/input0 --export_static --static_node_th 0.9 --static_edge_th 0.94 --static_format pdf)",
+      "Bash(squeue -u ponsin -o \"%.10i %.20j %.8T %.10M %.6D %R\")",
+      "Bash(python3 -c ' *)",
+      "Bash(SD=\"/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_4_wdecay_0.0001_nores/circuit_sweeps/input4\"; sed -n '1,60p' \"$SD/circuit_trace_sweep.out\")",
+      "Bash(bash slurm/intervention/Job_ablate_nores_v8_L4_m8.sh)",
+      "Bash(bash slurm/intervention/Job_ablate_meanclass_v8_L4_m8.sh)",
+      "Bash(python -c 'import json; d=json.load\\(open\\('\\\\''/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_16_wdecay_0.0001_dropout_0.1/circuit_sweeps/input0/sweep_summary.json'\\\\''\\)\\); print\\({k:d[k] for k in ['\\\\''node_thresholds'\\\\'','\\\\''edge_thresholds'\\\\'','\\\\''sink_mode'\\\\'','\\\\''input_idx'\\\\'','\\\\''eval_seed'\\\\'','\\\\''pooled_last_layer'\\\\''] if k in d}\\)')"
     ],
     "additionalDirectories": [
-      "/tmp"
+      "/tmp",
+      "/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_4_wdecay_0.0001_nores/circuit_sweeps/input4"
     ]
   }
 }

@@ -27,7 +27,9 @@ from pathlib import Path
 
 import torch
 
-from circuit_tracing.notation import sae_row_label, report_level
+from circuit_tracing.notation import (
+    sae_row_label, report_level, level_ring_color, LEVEL_RING_PALETTE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +239,8 @@ def _scheme_view(attrs, scheme):
             'position': attrs.get('parent_position', attrs.get('position')),
             'disagreement_frac': attrs.get('disagreement_frac'),
             'reassigned': attrs.get('reassigned'),
+            'child_level': attrs.get('child_level'),
+            'child_position': attrs.get('child_position'),
             'child_value': attrs.get('child_value'),
         }
     sdict = attrs.get('schemes')
@@ -251,6 +255,8 @@ def _scheme_view(attrs, scheme):
         'position': sv.get('position'),
         'disagreement_frac': sv.get('disagreement_frac'),
         'reassigned': sv.get('reassigned'),
+        'child_level': sv.get('child_level'),
+        'child_position': sv.get('child_position'),
         'child_value': sv.get('child_value'),
     }
 
@@ -259,86 +265,86 @@ def _scheme_view(attrs, scheme):
 # Hover-text builders
 # ---------------------------------------------------------------------------
 
-def _hover_feature(key, attrs, report=False, scheme=None) -> str:
+def _disp_level(code_level, report, L):
+    """Level to show in hover: flipped to report convention when report and L
+    are available, else the raw code level. None passes through as 'n/a'."""
+    if code_level is None:
+        return 'n/a'
+    if report and L is not None:
+        return report_level(code_level, L)
+    return int(code_level)
+
+
+def _hover_feature(key, attrs, report=False, scheme=None, L=None) -> str:
     _, k, p, i = key
     blk = sae_row_label(k, report)
     sv = _scheme_view(attrs, scheme)
-    scheme_tag = f' [{scheme}]' if scheme else ''
+    scheme_tag = f'  [{scheme}]' if scheme else ''
+    lvl = _disp_level(sv['level'], report, L)
     parts = [
-        f'feature ({blk}, position={p}, feat_index={i})',
-        f'z = {float(attrs.get("z", 0)):.3f}',
-        f'label_value{scheme_tag} = {sv["label_value"]}',
-        f'latent cell = (level={sv["level"]}, pos={sv["position"]})',
-        f'P(label | fire) = {float(sv["p_value_given_fire"]):.3f}',
+        f'<b>feature · {blk} · pos {p} · f{i}</b>{scheme_tag}',
+        f'latent cell  = level {lvl}, pos {sv["position"]}',
+        f'label value  = {sv["label_value"]}',
+        f'P(label|fire) = {float(sv["p_value_given_fire"]):.3f}',
     ]
     ne = sv['normalized_entropy']
-    parts.append(
-        f'normalized_entropy = {ne:.3f}' if ne is not None
-        else 'normalized_entropy = N/A'
-    )
+    parts.append(f'entropy      = {ne:.3f}' if ne is not None
+                 else 'entropy      = n/a')
+    parts.append(f'z            = {float(attrs.get("z", 0)):.3f}')
     if scheme == 'reassigned' and sv.get('reassigned'):
-        parts.append(f'REASSIGNED (child value tag = {sv.get("child_value")})')
+        cl = _disp_level(sv.get('child_level'), report, L)
+        parts.append(f'reassigned from child = level {cl}, '
+                     f'pos {sv.get("child_position")}, value {sv.get("child_value")}')
     fc = attrs.get('eval_firing_count')
     if fc is not None:
-        parts.append(f'eval_firing_count = {fc}')
+        parts.append(f'firing count = {fc}')
     return '<br>'.join(parts)
 
 
-def _hover_group(key, attrs, report=False, scheme=None) -> str:
+def _hover_group(key, attrs, report=False, scheme=None, L=None) -> str:
     _, k, g_idx = key
     blk = sae_row_label(k, report)
     sv = _scheme_view(attrs, scheme)
-    scheme_tag = f' [{scheme}]' if scheme else ''
+    scheme_tag = f'  [{scheme}]' if scheme else ''
+    lvl = _disp_level(sv['level'], report, L)
     parts = [
-        f'group ({blk}, idx={g_idx})',
-        f'n_constituents = {attrs["n_constituents"]}',
-        f'positions = {attrs["positions"]}',
-        f'z_sum = {float(attrs["z_sum"]):.3f}',
-        f'label_value{scheme_tag} = {sv["label_value"]}',
-        f'latent cell = (level={sv["level"]}, pos={sv["position"]})',
-        f'P(label | fire) = {float(sv["p_value_given_fire"]):.3f}',
+        f'<b>group · {blk} · idx {g_idx}</b>{scheme_tag}',
+        f'latent cell  = level {lvl}, pos {sv["position"]}',
+        f'label value  = {sv["label_value"]}',
+        f'P(label|fire) = {float(sv["p_value_given_fire"]):.3f}',
     ]
-    dis = sv.get('disagreement_frac')
-    if dis is not None and dis == dis:  # not NaN
-        parts.append(f'label disagreement = {dis:.2f} '
-                     f'(constituents split across latent cells)')
     ne = sv['normalized_entropy']
-    parts.append(
-        f'normalized_entropy = {ne:.3f}' if ne is not None
-        else 'normalized_entropy = N/A'
-    )
+    parts.append(f'entropy      = {ne:.3f}' if ne is not None
+                 else 'entropy      = n/a')
+    parts.append(f'constituents = {attrs["n_constituents"]} '
+                 f'@ positions {attrs["positions"]}')
+    parts.append(f'z_sum        = {float(attrs["z_sum"]):.3f}')
     constituents = attrs.get('constituents', [])
     if constituents:
         head = constituents[:8]
-        more = '' if len(constituents) <= 8 else f' ... (+{len(constituents) - 8})'
-        parts.append(
-            'constituents = [' +
-            ', '.join(f'(p={p_},f={f_})' for p_, f_ in head) +
-            more + ']'
-        )
+        more = '' if len(constituents) <= 8 else f' (+{len(constituents) - 8})'
+        parts.append('  [' + ', '.join(f'(p{p_},f{f_})' for p_, f_ in head)
+                     + more + ']')
     return '<br>'.join(parts)
 
 
 def _hover_err(key, attrs, report=False) -> str:
     _, k, p = key
-    return f'error<br>{sae_row_label(k, report)}, position={p}'
+    return f'<b>error · {sae_row_label(k, report)} · pos {p}</b>'
 
 
 def _hover_embed(key, attrs) -> str:
     _, p = key
     tok = attrs.get('token_id')
-    return f'embed<br>position={p}, token_id={tok}'
+    return f'<b>embed · pos {p}</b><br>token = {tok}'
 
 
 def _hover_logit(key, attrs) -> str:
     _, c = key
     prob = float(attrs.get('prob', float('nan')))
     is_true = attrs.get('is_true_class', False)
-    return (
-        f'logit (class={c})<br>'
-        f'prob = {prob:.3f}'
-        + ('<br>TRUE class' if is_true else '')
-    )
+    return (f'<b>logit · class {c}</b>{"  (TRUE)" if is_true else ""}'
+            f'<br>prob = {prob:.3f}')
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +434,7 @@ def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
                            scheme=None):
     import plotly.graph_objects as go
     feat_x, feat_y, feat_c, feat_s, feat_t, feat_l = [], [], [], [], [], []
+    feat_ring = []  # per-marker ring color = RHM level
     err_x, err_y, err_t = [], [], []
     emb_x, emb_y, emb_t, emb_l = [], [], [], []
     log_x, log_y, log_t, log_s, log_l = [], [], [], [], []
@@ -441,9 +448,10 @@ def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
             sv = _scheme_view(attrs, scheme)
             feat_x.append(x); feat_y.append(y)
             feat_c.append(_entropy_color_hex(sv['normalized_entropy']))
-            feat_s.append(_scaled_marker_size(14, float(attrs.get('z', 0)),
+            feat_ring.append(level_ring_color(sv['level'], K))
+            feat_s.append(_scaled_marker_size(18, float(attrs.get('z', 0)),
                                               ref_value=z_ref))
-            feat_t.append(_hover_feature(key, attrs, report, scheme=scheme))
+            feat_t.append(_hover_feature(key, attrs, report, scheme=scheme, L=K))
             lv = sv['label_value']
             feat_l.append('' if lv is None else str(int(lv)))
         elif kind == 'error':
@@ -462,14 +470,28 @@ def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
             log_l.append(str(int(attrs.get('class', key[1]))))
     traces = []
     if feat_x:
+        # Fill marker = entropy (selectivity), with a thin WHITE separator line
+        # so the level ring (drawn as an overlay just outside) never blends into
+        # a same-hue fill (e.g. green ring over green/selective fill).
         traces.append(go.Scatter(
             x=feat_x, y=feat_y, mode='markers+text',
             marker=dict(symbol='circle', size=feat_s, color=feat_c,
-                        line=dict(color='#222222', width=0.7)),
+                        line=dict(color='#ffffff', width=1.5)),
             text=feat_l, textposition='middle center',
             textfont=dict(size=8),
             hovertext=feat_t, hoverinfo='text',
-            name='feature', showlegend=True,
+            name='feature', showlegend=False,
+        ))
+        # Level ring overlay: a colored open circle sized just outside the fill,
+        # so reading order is fill -> white gap -> level color band. NOTE: for
+        # the 'circle-open' symbol the visible ring is marker.color (not
+        # marker.line.color); a per-marker line.color would all render the same.
+        ring_s = [s + 5.0 for s in feat_s]
+        traces.append(go.Scatter(
+            x=feat_x, y=feat_y, mode='markers',
+            marker=dict(symbol='circle-open', size=ring_s, color=feat_ring,
+                        line=dict(width=3.0)),
+            hoverinfo='skip', showlegend=False, name='feature level',
         ))
     if err_x:
         traces.append(go.Scatter(
@@ -477,7 +499,7 @@ def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
             marker=dict(symbol='square', size=8, color='#bdbdbd',
                         line=dict(color='#404040', width=0.7)),
             hovertext=err_t, hoverinfo='text',
-            name='error', showlegend=True,
+            name='error', showlegend=False,
         ))
     if emb_x:
         traces.append(go.Scatter(
@@ -487,7 +509,7 @@ def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
             text=emb_l, textposition='bottom center',
             textfont=dict(size=8),
             hovertext=emb_t, hoverinfo='text',
-            name='embed', showlegend=True,
+            name='embed', showlegend=False,
         ))
     if log_x:
         traces.append(go.Scatter(
@@ -497,7 +519,7 @@ def _node_traces_ungrouped(nodes: dict, kept: set, pos: dict, K: int,
             text=log_l, textposition='middle center',
             textfont=dict(size=8),
             hovertext=log_t, hoverinfo='text',
-            name='logit', showlegend=True,
+            name='logit', showlegend=False,
         ))
     return traces
 
@@ -521,22 +543,16 @@ def _node_traces_grouped(grouped_nodes: dict, kept: set, pos: dict, K: int,
             sv = _scheme_view(attrs, scheme)
             grp_x.append(x); grp_y.append(y)
             grp_c.append(_entropy_color_hex(sv['normalized_entropy']))
-            grp_s.append(_scaled_marker_size(16, float(attrs.get('z_sum', 0)),
-                                             ref_value=z_ref))
-            grp_t.append(_hover_group(key, attrs, report, scheme=scheme))
+            gsize = _scaled_marker_size(16, float(attrs.get('z_sum', 0)),
+                                        ref_value=z_ref)
+            grp_s.append(gsize)
+            grp_t.append(_hover_group(key, attrs, report, scheme=scheme, L=K))
             lv = sv['label_value']
             grp_l.append('' if lv is None else str(int(lv)))
-            # Disagreement outline: red + thicker when the group's
-            # signature-merged constituents split across latent cells under
-            # this scheme.
-            dis = sv.get('disagreement_frac')
-            if dis is not None and dis == dis and \
-                    dis > DISAGREEMENT_OUTLINE_THRESHOLD:
-                grp_line_c.append('#d62728')
-                grp_line_w.append(3.0)
-            else:
-                grp_line_c.append('#000000')
-                grp_line_w.append(1.6)
+            # Ring color = RHM level (same palette as the level-dist plots and
+            # the RHM tree). Disagreement is shown separately by a red halo.
+            grp_line_c.append(level_ring_color(sv['level'], K))
+            grp_line_w.append(1.6)
         elif kind == 'error':
             err_x.append(x); err_y.append(y)
             err_t.append(_hover_err(key, attrs, report))
@@ -553,14 +569,23 @@ def _node_traces_grouped(grouped_nodes: dict, kept: set, pos: dict, K: int,
             log_l.append(str(int(attrs.get('class', key[1]))))
     traces = []
     if grp_x:
+        # Fill = entropy, thin white separator; level ring drawn as an overlay
+        # (same fill -> white gap -> level band order as features).
         traces.append(go.Scatter(
             x=grp_x, y=grp_y, mode='markers+text',
             marker=dict(symbol='circle', size=grp_s, color=grp_c,
-                        line=dict(color=grp_line_c, width=grp_line_w)),
+                        line=dict(color='#ffffff', width=1.5)),
             text=grp_l, textposition='middle center',
             textfont=dict(size=8),
             hovertext=grp_t, hoverinfo='text',
-            name='group', showlegend=True,
+            name='group', showlegend=False,
+        ))
+        ring_s = [s + 5.0 for s in grp_s]
+        traces.append(go.Scatter(
+            x=grp_x, y=grp_y, mode='markers',
+            marker=dict(symbol='circle-open', size=ring_s, color=grp_line_c,
+                        line=dict(width=3.0)),
+            hoverinfo='skip', showlegend=False, name='group level',
         ))
     if err_x:
         traces.append(go.Scatter(
@@ -594,6 +619,86 @@ def _node_traces_grouped(grouped_nodes: dict, kept: set, pos: dict, K: int,
 
 
 # ---------------------------------------------------------------------------
+# Shared legend builder
+# ---------------------------------------------------------------------------
+
+def _add_legend_traces(fig, L: int, report_notation: bool, meta=None):
+    """Add dummy (no-data) legend entries to `fig`.
+
+    Legend box 1 (default 'legend'): ring colors + node-type symbols.
+    Legend box 2 ('legend2'):        entropy fill + edge directions.
+
+    `meta` is attached to each trace so the sweep JS shim can tag them as
+    'shared' (always visible regardless of slider state).
+    """
+    import plotly.graph_objects as go
+
+    def _tr(trace):
+        if meta is not None:
+            trace.meta = meta
+        return trace
+
+    # -- Ring colors (leaves -> root, ascending report level) ---------------
+    for code_l in range(L, -1, -1):
+        disp_l = report_level(code_l, L) if report_notation else code_l
+        color = level_ring_color(code_l, L)
+        is_leaf = (report_notation and disp_l == 0) or (not report_notation and disp_l == L)
+        is_root = (report_notation and disp_l == L) or (not report_notation and disp_l == 0)
+        lbl = (f'Level {disp_l} (leaves)' if is_leaf
+               else f'Level {disp_l} (root)' if is_root
+               else f'Level {disp_l}')
+        fig.add_trace(_tr(go.Scatter(
+            x=[None], y=[None], mode='markers',
+            marker=dict(symbol='circle-open', size=14, color=color,
+                        line=dict(width=3.0)),
+            name=lbl, showlegend=True,
+        )))
+    # -- Node-type symbols --------------------------------------------------
+    fig.add_trace(_tr(go.Scatter(
+        x=[None], y=[None], mode='markers',
+        marker=dict(symbol='square', size=10, color='#bdbdbd',
+                    line=dict(color='#404040', width=0.7)),
+        name='Error node', showlegend=True,
+    )))
+    fig.add_trace(_tr(go.Scatter(
+        x=[None], y=[None], mode='markers',
+        marker=dict(symbol='triangle-up', size=12, color='#ffe5b4',
+                    line=dict(color='#7a4f00', width=0.7)),
+        name='Embedding', showlegend=True,
+    )))
+    fig.add_trace(_tr(go.Scatter(
+        x=[None], y=[None], mode='markers',
+        marker=dict(symbol='diamond', size=12, color='#cfe2ff',
+                    line=dict(color='#0b3d91', width=0.7)),
+        name='Logit', showlegend=True,
+    )))
+    # -- Entropy fill (legend2) ---------------------------------------------
+    fig.add_trace(_tr(go.Scatter(
+        x=[None], y=[None], mode='markers',
+        marker=dict(symbol='circle', size=14, color='#1a9850',
+                    line=dict(color='#ffffff', width=1)),
+        name='Selective (low entropy)', showlegend=True, legend='legend2',
+    )))
+    fig.add_trace(_tr(go.Scatter(
+        x=[None], y=[None], mode='markers',
+        marker=dict(symbol='circle', size=14, color='#ffffff',
+                    line=dict(color='#aaaaaa', width=1.5)),
+        name='Uniform (high entropy)', showlegend=True, legend='legend2',
+    )))
+    # -- Edge directions (legend2) ------------------------------------------
+    fig.add_trace(_tr(go.Scatter(
+        x=[None, None], y=[None, None], mode='lines',
+        line=dict(color='#1f77b4', width=2.5),
+        name='Positive attribution', showlegend=True, legend='legend2',
+    )))
+    fig.add_trace(_tr(go.Scatter(
+        x=[None, None], y=[None, None], mode='lines',
+        line=dict(color='#d62728', width=2.5),
+        name='Negative attribution', showlegend=True, legend='legend2',
+    )))
+
+
+# ---------------------------------------------------------------------------
 # Tree panel (mirrors visualize._draw_rhm_tree)
 # ---------------------------------------------------------------------------
 
@@ -619,6 +724,7 @@ def _tree_traces(tree_row: dict, s: int, L: int, K: int, report=False):
                 line_y.extend([_y_for_level(l), _y_for_level(l + 1), None])
 
     node_x, node_y, node_text, hover_text = [], [], [], []
+    node_ring = []  # per-node ring color = RHM level (visual key for the graph)
     for l in range(L + 1):
         row = tree_row[l]
         if hasattr(row, 'tolist'):
@@ -632,22 +738,29 @@ def _tree_traces(tree_row: dict, s: int, L: int, K: int, report=False):
             x = _x_for_node(l, i)
             node_x.append(x); node_y.append(y)
             node_text.append(str(int(val)))
+            node_ring.append(level_ring_color(l, L))
             disp_l = report_level(l, L) if report else l
             hover_text.append(f'level={disp_l}, idx={i}, value={int(val)}')
 
+    # Match the circuit nodes: fill + thin white separator, level color as an
+    # overlay ring, so tree and feature/group rings read identically.
     return [
         go.Scatter(x=line_x, y=line_y, mode='lines',
                    line=dict(color='#888888', width=0.6),
                    opacity=0.7, hoverinfo='skip', showlegend=False,
                    name='tree edges'),
         go.Scatter(x=node_x, y=node_y, mode='markers+text',
-                   marker=dict(symbol='circle', size=14,
+                   marker=dict(symbol='circle', size=18,
                                color='#f4f4f4',
-                               line=dict(color='#333333', width=0.7)),
+                               line=dict(color='#ffffff', width=1.5)),
                    text=node_text, textposition='middle center',
-                   textfont=dict(size=8),
+                   textfont=dict(size=12),
                    hovertext=hover_text, hoverinfo='text',
                    showlegend=False, name='tree nodes'),
+        go.Scatter(x=node_x, y=node_y, mode='markers',
+                   marker=dict(symbol='circle-open', size=23, color=node_ring,
+                               line=dict(width=3.0)),
+                   hoverinfo='skip', showlegend=False, name='tree level'),
     ]
 
 
@@ -729,11 +842,16 @@ def _select_kept_grouped(grouped_nodes: dict, grouped_edges: list,
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def render_html(run_dir: Path, out_path: Path,
-                show_all_logits: bool = False,
-                show_errors: bool = True,
-                inline_js: bool = False,
-                report_notation: bool = False) -> Path:
+def build_figure(run_dir: Path,
+                 show_all_logits: bool = False,
+                 show_errors: bool = True,
+                 report_notation: bool = True,
+                 scheme: str | None = None):
+    """Build and return a Plotly Figure for one circuit-trace run directory.
+
+    `scheme` selects which per-node label scheme to display (None = top-level
+    fields, 'parent' / 'level' / 'whole_tree' / 'reassigned' for sweep data).
+    """
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -811,7 +929,7 @@ def render_html(run_dir: Path, out_path: Path,
         )
     fig = make_subplots(
         rows=2, cols=2,
-        column_widths=[0.7, 0.3],
+        column_widths=[0.58, 0.42],
         horizontal_spacing=0.06,
         vertical_spacing=0.10,
         specs=specs,
@@ -823,7 +941,7 @@ def render_html(run_dir: Path, out_path: Path,
         fig.add_trace(tr, row=1, col=1)
     for tr in _node_traces_ungrouped(nodes, kept_u, pos_u, K=K,
                                      p_ref=p_ref, z_ref=z_ref,
-                                     report=report_notation):
+                                     report=report_notation, scheme=scheme):
         fig.add_trace(tr, row=1, col=1)
 
     # Row 2, col 1: grouped (or a placeholder annotation if missing).
@@ -832,11 +950,9 @@ def render_html(run_dir: Path, out_path: Path,
             fig.add_trace(tr, row=2, col=1)
         for tr in _node_traces_grouped(grouped_nodes, kept_g, pos_g, K=K,
                                        p_ref=p_ref, z_ref=z_ref_g,
-                                       report=report_notation):
+                                       report=report_notation, scheme=scheme):
             fig.add_trace(tr, row=2, col=1)
     else:
-        # In a 2x2 grid the grouped panel is axis 'x3'/'y3' (third axis
-        # plotly assigns after row1col1=x/y, row1col2=x2/y2).
         fig.add_annotation(
             text='grouped_nodes.pt / grouped_edges.pt not found in this '
                  'run_dir; re-run circuit_trace.py to produce them.',
@@ -844,26 +960,25 @@ def render_html(run_dir: Path, out_path: Path,
             showarrow=False, font=dict(size=11, color='#888888'),
         )
 
-    # Row 1, col 2: ground-truth tree (spans both rows visually).
+    # Row 1, col 2: ground-truth tree.
     if has_tree:
         for tr in _tree_traces(tree_row, s=s, L=L, K=K,
                                report=report_notation):
             fig.add_trace(tr, row=1, col=2)
 
     # Axes / layout.
+    n_nodes_pre = sum(fidelity.get('n_nodes_pre_by_kind', {}).values())
+    n_nodes_post = sum(fidelity.get('n_nodes_post_by_kind', {}).values())
+    n_edges_pre = fidelity.get('n_edges_pre_prune', '?')
+    n_edges_post = fidelity.get('n_edges_post_prune', '?')
+    scheme_tag = f'  [{scheme}]' if scheme else ''
     title = (
-        f"input_idx={fidelity.get('input_idx', '?')}  "
+        f"input {fidelity.get('input_idx', '?')}  "
         f"y_true={y_true}  y_pred={y_pred}  "
-        f"prob[y_pred]={float(torch.softmax(fidelity['logits'], dim=0)[y_pred].item()):.3f}  |  "
-        f"bit_id_err={fidelity['bit_identity_max_err']:.2e}  "
-        f"complete={fidelity['completeness_score']:.2f}  "
-        f"replace={fidelity['replacement_score']:.2f}  "
-        f"align_pre={fidelity['subtree_alignment_fraction']:.2f}  "
-        f"align_post={fidelity.get('subtree_alignment_fraction_postprune', float('nan')):.2f}  "
-        f"sink={fidelity['sink_mode']}  "
-        f"n_th={fidelity['node_threshold']}  e_th={fidelity['edge_threshold']}"
+        f"completeness={fidelity['completeness_score']:.2f}{scheme_tag}  |  "
+        f"nodes {n_nodes_pre}->{n_nodes_post}  "
+        f"edges {n_edges_pre}->{n_edges_post}"
     )
-    # Left column axes: shared per-layer ticks, leaf-position x range.
     for r in (1, 2):
         fig.update_yaxes(
             row=r, col=1,
@@ -881,16 +996,8 @@ def render_html(run_dir: Path, out_path: Path,
             range=[-0.7, N - 0.3],
             showgrid=True, gridcolor='#eeeeee',
         )
-    # Cross-row x sharing within the left column. `make_subplots` only
-    # ties x-axes across rows when shared_xaxes=True at construction time,
-    # but that also lifts the col-2 tree's x. We tie row=2 col=1 -> row=1
-    # col=1 by name; plotly auto-assigns axes as x/x2/x3/x4 in row-major
-    # order, so col-1 axes are x (r1c1) and x3 (r2c1).
     fig.update_xaxes(row=2, col=1, matches='x')
 
-    # Tree axis ticks (row 1 col 2). Tree only occupies the top cell of
-    # the right column; center it vertically in the figure by overriding
-    # its y-axis domain.
     if has_tree:
         fig.update_yaxes(
             row=1, col=2,
@@ -900,7 +1007,7 @@ def render_html(run_dir: Path, out_path: Path,
                 f'level {report_level(l, L) if report_notation else l}'
                 for l in range(L + 1)
             ],
-            domain=[0.25, 0.75],
+            domain=[0.28, 0.97],
         )
         fig.update_xaxes(
             row=1, col=2,
@@ -910,14 +1017,36 @@ def render_html(run_dir: Path, out_path: Path,
             showgrid=True, gridcolor='#eeeeee',
         )
 
+    # Legend: ring colors + node types (left box) + entropy + edges (right box).
+    _add_legend_traces(fig, L, report_notation)
+    _legend_style = dict(
+        xanchor='left', yanchor='top',
+        bgcolor='rgba(255,255,255,0.97)',
+        bordercolor='#cccccc', borderwidth=1,
+        font=dict(size=9),
+    )
     fig.update_layout(
         title=dict(text=title, font=dict(size=11)),
+        width=1050,
         height=800,
         margin=dict(l=60, r=20, t=80, b=40),
         hovermode='closest',
         plot_bgcolor='#fafafa',
+        showlegend=True,
+        legend=dict(x=0.63, y=0.25, **_legend_style),
+        legend2=dict(x=0.83, y=0.25, **_legend_style),
     )
+    return fig
 
+
+def render_html(run_dir: Path, out_path: Path,
+                show_all_logits: bool = False,
+                show_errors: bool = True,
+                inline_js: bool = False,
+                report_notation: bool = True) -> Path:
+    fig = build_figure(run_dir, show_all_logits=show_all_logits,
+                       show_errors=show_errors, report_notation=report_notation)
+    out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(
         str(out_path),
@@ -941,11 +1070,12 @@ def main():
     p.add_argument('--inline_js', action='store_true',
                    help='Embed plotly.js inline (larger file, works offline). '
                         'Default uses the CDN.')
-    p.add_argument('--report-notation', dest='report_notation',
-                   action='store_true',
-                   help='Relabel circuit y-axis as SAE k (1-based) and flip '
-                        'RHM-tree levels to bottom-up (leaves=0, root=L). '
-                        'Display only.')
+    p.add_argument('--no-report-notation', dest='report_notation',
+                   action='store_false',
+                   help='Disable report notation (default ON): use Layer k '
+                        '(0-based) and top-down RHM levels (root=0, leaf=L) '
+                        'instead of SAE k / bottom-up. Display only.')
+    p.set_defaults(report_notation=True)
     args = p.parse_args()
     run_dir = Path(args.run_dir)
     if not run_dir.is_dir():

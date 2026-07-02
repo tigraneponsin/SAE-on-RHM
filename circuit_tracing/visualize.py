@@ -312,7 +312,7 @@ def render(run_dir: Path, out_path: Path,
            show_errors: bool,
            figsize: tuple,
            dpi: int,
-           report_notation: bool = False):
+           report_notation: bool = True):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -561,11 +561,12 @@ def main():
     p.add_argument('--inline_js', action='store_true',
                    help='Embed plotly.js inline in the HTML (larger file, '
                         'works offline). Default uses the CDN.')
-    p.add_argument('--report-notation', dest='report_notation',
-                   action='store_true',
-                   help='Relabel the circuit y-axis as SAE k (1-based) instead '
-                        'of layer k, and flip RHM-tree levels to bottom-up '
-                        '(leaves=0, root=L). Display only.')
+    p.add_argument('--no-report-notation', dest='report_notation',
+                   action='store_false',
+                   help='Disable report notation (default ON): use layer k '
+                        '(0-based) and top-down RHM levels (root=0, leaf=L) '
+                        'instead of SAE k / bottom-up. Display only.')
+    p.set_defaults(report_notation=True)
     args = p.parse_args()
 
     run_dir = Path(args.run_dir)

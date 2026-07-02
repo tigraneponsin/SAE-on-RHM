@@ -349,7 +349,7 @@ def make_level_dist_plot(diags, out_prefix, variant, scheme='fire', xlim=None,
         ax.set_xlabel(r'$\lambda$', fontsize=12)
         ax.set_ylabel('share', fontsize=12)
         if p_idx == 0:
-            ax.legend(fontsize=7, loc='upper right')
+            ax.legend(fontsize=7, loc='upper left')
 
     for k in range(P, len(axes)):
         axes[k].axis('off')

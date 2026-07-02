@@ -33,8 +33,12 @@ from circuit_tracing.visualize_interactive import (
     _edge_traces,
     _node_traces_ungrouped, _node_traces_grouped,
     _tree_traces,
+    _add_legend_traces,
+    build_figure,
 )
-from circuit_tracing.notation import sae_row_label, report_level
+from circuit_tracing.notation import (
+    sae_row_label, report_level,
+)
 
 # Label schemes the scheme slider cycles through (order = slider step order).
 SCHEMES = ('parent', 'level', 'whole_tree', 'reassigned')
@@ -96,16 +100,12 @@ _JS_SHIM = r"""
       var schemeName = schemes[cur_sc] || ('scheme ' + cur_sc);
       if (c) {
         status.textContent =
-          'cell (i=' + cur_i + ', j=' + cur_j + ')  |  ' +
-          'label scheme = ' + schemeName + '  |  ' +
-          'n_th = ' + Number(c.node_threshold).toFixed(3) + ',  ' +
+          'n_th = ' + Number(c.node_threshold).toFixed(3) + '  ' +
           'e_th = ' + Number(c.edge_threshold).toFixed(3) + '  |  ' +
-          'n_features_post = ' + c.n_features_post + ',  ' +
-          'n_edges_post = ' + c.n_edges_post + ',  ' +
-          'n_groups = ' + c.n_groups + ' (' + c.n_groups_multi + ' multi),  ' +
-          'completeness = ' + Number(c.completeness_score).toFixed(3) + ',  ' +
-          'replacement = ' + Number(c.replacement_score).toFixed(3) + ',  ' +
-          'align_post = ' + Number(c.subtree_alignment_fraction_postprune).toFixed(3);
+          'label scheme = ' + schemeName + '  |  ' +
+          'completeness = ' + Number(c.completeness_score).toFixed(3) + '  ' +
+          'nodes_post = ' + c.n_features_post + '  ' +
+          'edges_post = ' + c.n_edges_post;
       }
     }
   }
@@ -125,7 +125,7 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
                       show_all_logits: bool = False,
                       show_errors: bool = True,
                       inline_js: bool = False,
-                      report_notation: bool = False) -> Path:
+                      report_notation: bool = True) -> Path:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -163,7 +163,7 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
     # right region is free for the two sliders.
     fig = make_subplots(
         rows=2, cols=2,
-        column_widths=[0.7, 0.3],
+        column_widths=[0.58, 0.42],
         horizontal_spacing=0.06,
         vertical_spacing=0.10,
         specs=[[{}, {}],
@@ -279,30 +279,36 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
     # roughly x in [0.74, 0.98] given column_widths=[0.7, 0.3] +
     # horizontal_spacing=0.06; y values sit below the tree (which ends
     # roughly at y=0.55 with vertical_spacing=0.10 and height=900).
+    # Three sliders stacked in the bottom-right region, below the tree (which
+    # ends ~y=0.55). Order MUST stay [node, edge, scheme]: the JS shim reads the
+    # scheme slider as layout.sliders[2].
+    # Sliders are compact (thin pad) and stacked below the legend boxes.
+    # Legend boxes sit at y=0.52 (just below the tree panel ~y=0.54).
+    # Sliders start at y=0.29 so nothing overlaps.
     sliders = [
         dict(
             active=0, currentvalue=dict(prefix='node_threshold = ',
-                                         font=dict(size=11)),
+                                         font=dict(size=10)),
             steps=node_steps,
             name='node_th_slider',
-            pad=dict(t=10, b=4),
-            x=0.74, y=0.30, len=0.24,
+            pad=dict(t=4, b=4),
+            x=0.62, y=0.30, len=0.36,
         ),
         dict(
             active=0, currentvalue=dict(prefix='edge_threshold = ',
-                                         font=dict(size=11)),
+                                         font=dict(size=10)),
             steps=edge_steps,
             name='edge_th_slider',
-            pad=dict(t=10, b=4),
-            x=0.74, y=0.10, len=0.24,
+            pad=dict(t=4, b=4),
+            x=0.62, y=0.20, len=0.36,
         ),
         dict(
             active=0, currentvalue=dict(prefix='label scheme = ',
-                                         font=dict(size=11)),
+                                         font=dict(size=10)),
             steps=scheme_steps,
             name='scheme_slider',
-            pad=dict(t=10, b=4),
-            x=0.40, y=0.10, len=0.28,
+            pad=dict(t=4, b=4),
+            x=0.62, y=0.10, len=0.36,
         ),
     ]
 
@@ -347,6 +353,9 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
         showgrid=True, gridcolor='#eeeeee',
     )
 
+    # ---- Legend (shared, always visible) ----------------------------------
+    _add_legend_traces(fig, K, report_notation, meta={'cell': 'shared'})
+
     # ---- Layout ----
     title = (
         f'Sweep: node_threshold ({K1}) x edge_threshold ({K2}) x '
@@ -355,13 +364,23 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
         f"bit_id_err={summary['bit_identity_max_err']:.2e}  "
         f"sink={summary['sink_mode']}"
     )
+    _legend_style = dict(
+        xanchor='left', yanchor='top',
+        bgcolor='rgba(255,255,255,0.97)',
+        bordercolor='#cccccc', borderwidth=1,
+        font=dict(size=9),
+    )
     fig.update_layout(
         title=dict(text=title, font=dict(size=11)),
         sliders=sliders,
+        width=1050,
         height=900,
         margin=dict(l=60, r=20, t=80, b=80),
         hovermode='closest',
         plot_bgcolor='#fafafa',
+        showlegend=True,
+        legend=dict(x=0.63, y=0.52, **_legend_style),
+        legend2=dict(x=0.83, y=0.52, **_legend_style),
         # Bake threshold axes + per-cell metric table into layout.meta so the
         # JS shim can read them without an extra round-trip.
         meta=dict(
@@ -371,7 +390,6 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
             cells_by_idx=cells_by_idx,
         ),
     )
-
     # ---- Status div for the title strip + write HTML ----
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -401,6 +419,35 @@ def render_sweep_html(sweep_dir: Path, out_path: Path,
     return out_path
 
 
+def export_cell_static(sweep_dir: Path, node_th: float, edge_th: float,
+                        out_path: Path, scheme: str = 'parent',
+                        show_all_logits: bool = False,
+                        show_errors: bool = True,
+                        report_notation: bool = True) -> Path:
+    """Export a single (node_th, edge_th) cell as a static image (PDF/SVG/PNG).
+
+    Requires the `kaleido` package: pip install kaleido.
+    The output format is inferred from out_path's extension.
+    """
+    subdir = Path(sweep_dir) / _subdir_name(node_th, edge_th)
+    if not subdir.is_dir():
+        raise SystemExit(
+            f'No subdir for node_th={node_th}, edge_th={edge_th}: {subdir}\n'
+            f'Available: {_subdir_name(node_th, edge_th)}'
+        )
+    fig = build_figure(
+        subdir,
+        show_all_logits=show_all_logits,
+        show_errors=show_errors,
+        report_notation=report_notation,
+        scheme=scheme,
+    )
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_image(str(out_path))
+    return out_path
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--sweep_dir', required=True,
@@ -411,18 +458,58 @@ def main():
     p.add_argument('--hide_errors', action='store_true')
     p.add_argument('--inline_js', action='store_true',
                    help='Embed plotly.js inline (larger file, works offline).')
-    p.add_argument('--report-notation', dest='report_notation',
-                   action='store_true',
-                   help='Relabel circuit y-axis as SAE k (1-based) and flip '
-                        'RHM-tree levels to bottom-up (leaves=0, root=L). '
-                        'Display only.')
+    p.add_argument('--no-report-notation', dest='report_notation',
+                   action='store_false',
+                   help='Disable report notation (default ON).')
+    # Static export flags (skip HTML generation if set).
+    p.add_argument('--export_static', action='store_true',
+                   help='Export a single cell as a static figure instead of '
+                        'the interactive HTML sweep. Requires kaleido.')
+    p.add_argument('--static_node_th', type=float, default=None,
+                   help='node_threshold for --export_static.')
+    p.add_argument('--static_edge_th', type=float, default=None,
+                   help='edge_threshold for --export_static.')
+    p.add_argument('--static_scheme', default='parent',
+                   choices=['parent', 'level', 'whole_tree', 'reassigned'],
+                   help='Label scheme for --export_static (default: parent).')
+    p.add_argument('--static_format', default='pdf',
+                   choices=['pdf', 'svg', 'png'],
+                   help='Output format for --export_static (default: pdf).')
+    p.add_argument('--static_out', default=None,
+                   help='Output path for --export_static. Defaults to '
+                        '<sweep_dir>/circuit_node{n_th}_edge{e_th}.<fmt>.')
+    p.set_defaults(report_notation=True)
     args = p.parse_args()
 
     sweep_dir = Path(args.sweep_dir)
     if not sweep_dir.is_dir():
         raise SystemExit(f'--sweep_dir not a directory: {sweep_dir}')
-    out_path = Path(args.out) if args.out else sweep_dir / 'sweep_circuit.html'
 
+    if args.export_static:
+        if args.static_node_th is None or args.static_edge_th is None:
+            raise SystemExit(
+                '--export_static requires --static_node_th and --static_edge_th'
+            )
+        if args.static_out:
+            static_path = Path(args.static_out)
+        else:
+            name = (f'circuit_node{args.static_node_th:.4f}'
+                    f'_edge{args.static_edge_th:.4f}.{args.static_format}')
+            static_path = sweep_dir / name
+        final = export_cell_static(
+            sweep_dir=sweep_dir,
+            node_th=args.static_node_th,
+            edge_th=args.static_edge_th,
+            out_path=static_path,
+            scheme=args.static_scheme,
+            show_all_logits=args.show_all_logits,
+            show_errors=not args.hide_errors,
+            report_notation=args.report_notation,
+        )
+        print(f'Wrote {final}')
+        return
+
+    out_path = Path(args.out) if args.out else sweep_dir / 'sweep_circuit.html'
     final = render_sweep_html(
         sweep_dir=sweep_dir,
         out_path=out_path,

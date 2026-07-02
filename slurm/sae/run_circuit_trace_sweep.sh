@@ -288,12 +288,13 @@ set -e
 # -- Plot the sweep into an interactive HTML (visualize_sweep.py) -------------
 # Only if the trace sweep succeeded; a plot failure is reported but does not
 # mask the (successful) trace exit code. Writes <OUT_DIR>/sweep_circuit.html.
-# REPORT_NOTATION=1 relabels the circuit y-axis as SAE k (1-based) and flips the
-# RHM-tree levels to bottom-up (leaves=0, root=L). Display only; default unset.
-REPORT_NOTATION="${REPORT_NOTATION:-0}"
+# Report notation is ON by default (SAE k 1-based y-axis, RHM levels bottom-up
+# leaves=0/root=L). Set REPORT_NOTATION=0 to opt out and use code notation
+# (Layer k 0-based, levels root=0/leaf=L). Display only.
+REPORT_NOTATION="${REPORT_NOTATION:-1}"
 RN_ARGS=()
-if [[ "${REPORT_NOTATION}" == "1" ]]; then
-    RN_ARGS+=(--report-notation)
+if [[ "${REPORT_NOTATION}" == "0" ]]; then
+    RN_ARGS+=(--no-report-notation)
 fi
 echo "REPORT_NOTATION: ${REPORT_NOTATION}"
 

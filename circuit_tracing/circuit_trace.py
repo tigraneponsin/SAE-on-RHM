@@ -644,6 +644,8 @@ def finalize_one_config(prepared: dict,
     print(f'  edges: {prune_diag["n_edges_pre"]} pre -> {prune_diag["n_edges_post"]} post')
     print(f'  features: {prune_diag["n_features_pre"]} pre -> '
           f'{prune_diag["n_features_post"]} post')
+    print(f'  errors:   {prune_diag["n_errors_pre"]} pre -> '
+          f'{prune_diag["n_errors_post"]} post')
     print(f'  nodes by kind pre  = {prune_diag["n_nodes_pre_by_kind"]}')
     print(f'  nodes by kind post = {prune_diag["n_nodes_post_by_kind"]}')
     print(f'  completeness_score = {prune_diag["completeness_score"]:.3f}')
@@ -698,6 +700,8 @@ def finalize_one_config(prepared: dict,
         'n_nodes_post_by_kind': prune_diag['n_nodes_post_by_kind'],
         'n_edges_pre_prune': prune_diag['n_edges_pre'],
         'n_edges_post_prune': prune_diag['n_edges_post'],
+        'n_errors_pre': prune_diag['n_errors_pre'],
+        'n_errors_post': prune_diag['n_errors_post'],
         'completeness_score': prune_diag['completeness_score'],
         'replacement_score': prune_diag['replacement_score'],
         'completeness_weight_convention': prune_diag['completeness_weight_convention'],
@@ -756,6 +760,8 @@ def finalize_one_config(prepared: dict,
         'n_nodes_post_by_kind': prune_diag['n_nodes_post_by_kind'],
         'n_edges_pre_prune': prune_diag['n_edges_pre'],
         'n_edges_post_prune': prune_diag['n_edges_post'],
+        'n_errors_pre': prune_diag['n_errors_pre'],
+        'n_errors_post': prune_diag['n_errors_post'],
         'completeness_score': prune_diag['completeness_score'],
         'replacement_score': prune_diag['replacement_score'],
         'n_grouped_nodes': n_groups,
