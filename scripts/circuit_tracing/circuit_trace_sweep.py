@@ -10,7 +10,7 @@ change across configs (n_features_post, n_edges_post, n_groups,
 completeness, replacement, post-prune subtree alignment).
 
 Usage:
-    python -m circuit_tracing.circuit_trace_sweep \\
+    python -m scripts.circuit_tracing.circuit_trace_sweep \\
         --train_output /path/transformer.pt \\
         --sae_ckpts L0.pt L1.pt L2.pt \\
         --sae_eval_artifacts L0.sae_eval.pt L1.sae_eval.pt L2.sae_eval.pt \\
@@ -35,11 +35,11 @@ import torch
 
 # Make REPO_ROOT importable for `scripts.*` / `models.*` exactly like
 # circuit_trace.py.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from circuit_tracing.circuit_trace import (  # noqa: E402
+from scripts.circuit_tracing.circuit_trace import (  # noqa: E402
     prepare_pipeline, finalize_one_config, _RemovedFlag,
 )
 

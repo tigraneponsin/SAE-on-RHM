@@ -29,16 +29,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-_here = Path(__file__).resolve().parent
-sys.path.insert(0, str(_here))
-sys.path.insert(0, str(_here.parent / 'common'))
-sys.path.insert(0, str(_here.parent.parent))
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from notation import report_level, add_report_flag
-from plot_entropy_lambda import _find_threshold_lambda
-from min_entropy_diag import SCHEMES
-from feature_splitting_diag import (resolve_leak_table, process_artifact,
-                                    DEFAULT_ARTIFACTS_DIR)
+from scripts.common.notation import report_level, add_report_flag
+from scripts.sae_sweep.entropy_core import (SCHEMES,
+                                            find_threshold_lambda as _find_threshold_lambda)
+from scripts.sae_sweep.absorption import resolve_leak_table
+from scripts.sae_sweep.entropy_diag import (
+    split_process_artifact as process_artifact, DEFAULT_ARTIFACTS_DIR)
 
 DEFAULT_ALPHAS = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6]
 

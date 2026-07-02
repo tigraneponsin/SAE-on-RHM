@@ -157,13 +157,12 @@ python scripts/sae_eval/run.py \
     --with-classification-impact
 ```
 
-The slurm wrappers are already updated:
+The slurm wrapper for eval + sweep plots:
 
-- `slurm/sae/run_analysis.sh` passes `--with-all`. Drop-in for the old
-  `analyze_sae.py`.
-- `slurm/sae/run_eval.sh` does the same and also emits the two CSVs.
-- `slurm/sae/run_eval_intervention.sh` mirrors `run_eval.sh` with a
-  separate output directory so intervention eval doesn't collide.
+- `slurm/sae/run_analysis_and_plots.sh` runs the streaming eval (`--with-all`)
+  and then the sweep plots (`plot_lambda_metrics.py`, `entropy_diag.py`). It is
+  the dependent step submitted by `run_full_sweep.sh`. (Eval-only variants
+  `run_analysis.sh` / `run_eval.sh` are kept locally but untracked.)
 
 ## What lands on disk
 

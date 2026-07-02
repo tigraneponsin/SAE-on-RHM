@@ -34,8 +34,8 @@ import matplotlib.cm as cm
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from notation import sae_label, add_report_flag
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.common.notation import sae_label, add_report_flag
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +238,68 @@ def plot_curves(records, loss_types, max_steps, outfile, color_by='lr',
 
 
 # ---------------------------------------------------------------------------
+# Cross-sweep comparison (one color per sweep dir; formerly plot_multi_sweep.py)
+# ---------------------------------------------------------------------------
+
+def plot_multi_curves(all_records, loss_types, max_steps, outfile, source_labels,
+                      layer_filter=None, report_notation=False):
+    """Loss curves from several sweep dirs on one figure, one color per dir."""
+    layers = sorted({r['layer'] for r in all_records})
+    if layer_filter is not None:
+        layers = [l for l in layers if l in layer_filter]
+
+    n_rows = len(layers)
+    n_cols = len(loss_types)
+
+    cmap = cm.get_cmap('tab10', max(len(source_labels), 1))
+    label_color = {lab: cmap(i) for i, lab in enumerate(source_labels)}
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(5 * n_cols, 4 * n_rows),
+        squeeze=False,
+    )
+
+    for row, layer in enumerate(layers):
+        layer_recs = [r for r in all_records if r['layer'] == layer]
+        for col, loss_key in enumerate(loss_types):
+            ax = axes[row][col]
+            for r in layer_recs:
+                steps = r['step']
+                if max_steps is not None:
+                    mask = steps <= max_steps
+                    steps = steps[mask]
+                    vals = r[loss_key][mask]
+                else:
+                    vals = r[loss_key]
+                pos = steps > 0
+                ax.plot(steps[pos], vals[pos],
+                        color=label_color[r['source_label']],
+                        linewidth=1.5, alpha=0.8, label=r['source_label'])
+            ax.set_xscale('log')
+            ax.set_xlabel('Steps', fontsize=10)
+            ax.set_ylabel(LOSS_LABELS[loss_key], fontsize=10)
+            ax.set_title(sae_label(layer, report_notation), fontsize=11)
+            ax.grid(True, which='both', linestyle='--', linewidth=0.4, alpha=0.6)
+
+    handles_seen = {}
+    for ax_row in axes:
+        for ax in ax_row:
+            for h, l in zip(*ax.get_legend_handles_labels()):
+                if l not in handles_seen:
+                    handles_seen[l] = h
+    fig.legend(list(handles_seen.values()), list(handles_seen.keys()),
+               title='Sweep', loc='lower center',
+               ncol=min(len(source_labels), 6),
+               bbox_to_anchor=(0.5, -0.02), fontsize=9)
+    fig.suptitle('Cross-sweep comparison', fontsize=13, y=1.01)
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=150, bbox_inches='tight')
+    print(f'Figure saved to {outfile}')
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -247,7 +309,16 @@ def _parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--sweep_dir', type=str, default=None,
-                   help=f'Sweep directory with .pt checkpoints (default: {DEFAULT_SWEEP_DIR})')
+                   help=f'Single sweep directory with .pt checkpoints '
+                        f'(default: {DEFAULT_SWEEP_DIR})')
+    p.add_argument('--sweep_dirs', nargs='+', default=None,
+                   help='Two or more sweep directories to compare on one figure '
+                        '(one color per dir). Overrides --sweep_dir / --color_by.')
+    p.add_argument('--labels', nargs='+', default=None,
+                   help='Legend labels for --sweep_dirs (default: directory names)')
+    p.add_argument('--layer', type=str, default=None,
+                   help='Comma-separated layers to plot in --sweep_dirs mode '
+                        '(default: all found)')
     p.add_argument('--outfile', type=str, default=None,
                    help='Output figure path (default: <sweep_dir>/loss_curves.png)')
     p.add_argument('--loss', type=str, default=None,
@@ -257,15 +328,63 @@ def _parse_args():
                    help='Truncate x-axis at this step count')
     p.add_argument('--color_by', type=str, default=None,
                    choices=['lr', 'batch_size', 'steps', 'train_size', 'lambda_l1'],
-                   help=f'Parameter to color lines by (default: {DEFAULT_COLOR_BY})')
+                   help=f'Parameter to color lines by, single-sweep mode '
+                        f'(default: {DEFAULT_COLOR_BY})')
     p.add_argument('--yscale', type=str, default='log', choices=['linear', 'log'],
-                   help='Y-axis scale for loss plots (default: linear)')
+                   help='Y-axis scale for loss plots (default: log)')
     add_report_flag(p)
     return p.parse_args()
 
 
+def _loss_types(loss):
+    if loss == 'all':
+        return ['total', 'recon', 'sparse']
+    if loss in LOSS_LABELS:
+        return [loss]
+    print(f'Unknown loss value "{loss}". Choose from: total, recon, sparse, all')
+    sys.exit(1)
+
+
+def _run_multi(args):
+    sweep_dirs = [Path(d) for d in args.sweep_dirs]
+    labels = args.labels or [d.name for d in sweep_dirs]
+    if len(labels) != len(sweep_dirs):
+        print('ERROR: number of --labels must match number of --sweep_dirs',
+              file=sys.stderr)
+        sys.exit(1)
+    if not args.outfile:
+        print('ERROR: --outfile is required with --sweep_dirs', file=sys.stderr)
+        sys.exit(1)
+    loss_types = _loss_types(args.loss or DEFAULT_LOSS)
+    layer_filter = (set(int(x.strip()) for x in args.layer.split(','))
+                    if args.layer is not None else None)
+
+    all_records = []
+    for sweep_dir, label in zip(sweep_dirs, labels):
+        ckpt_files = sorted(sweep_dir.glob('*.pt'))
+        if not ckpt_files:
+            print(f'WARNING: No .pt files in {sweep_dir}')
+            continue
+        for f in ckpt_files:
+            r = _load_curves(str(f))
+            if r is not None:
+                r['source_label'] = label
+                all_records.append(r)
+    if not all_records:
+        print('No valid checkpoints found across all directories.')
+        sys.exit(0)
+    source_labels = list(dict.fromkeys(r['source_label'] for r in all_records))
+    plot_multi_curves(all_records, loss_types, args.max_steps, args.outfile,
+                      source_labels, layer_filter=layer_filter,
+                      report_notation=args.report_notation)
+
+
 def main():
     args = _parse_args()
+
+    if args.sweep_dirs:
+        _run_multi(args)
+        return
 
     sweep_dir = Path(args.sweep_dir or DEFAULT_SWEEP_DIR)
     loss      = args.loss or DEFAULT_LOSS

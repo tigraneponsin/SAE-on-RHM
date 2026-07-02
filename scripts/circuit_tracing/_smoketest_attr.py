@@ -1,4 +1,4 @@
-"""Smoke test for circuit_tracing.attribution.
+"""Smoke test for scripts.circuit_tracing.attribution.
 
 Builds a tiny transformer + tiny SAE per layer with random weights, runs the
 full pipeline (anchors -> SAE -> edges), and verifies:
@@ -46,8 +46,8 @@ from models.transformer import (
     FreeClassificationTransformerNoResidual,
 )
 from models.sae import SparseAutoencoder
-from circuit_tracing.linearize import capture_anchors, make_M, materialize_M
-from circuit_tracing.attribution import (
+from scripts.circuit_tracing.linearize import capture_anchors, make_M, materialize_M
+from scripts.circuit_tracing.attribution import (
     sae_forward, edges_layer_to_layer,
     edges_embedding_to_layer0,
     edges_final_layer_to_logits_per_class,
@@ -232,7 +232,7 @@ def _check(variant: str):
     # For each class c, total_attr[c] should equal
     #   W_cls[c] @ _lnf_pool_lin(v_total_K)
     # where v_total_K = v_feat_sum_K + e_K = (x_hat_K - b_dec_K/act_scale_K) + e_K.
-    from circuit_tracing.attribution import _lnf_pool_lin
+    from scripts.circuit_tracing.attribution import _lnf_pool_lin
     v_feat_sum_K = (z_K @ sae_K.decoder.weight.T) / act_scales[K - 1]
     v_total_K = v_feat_sum_K + e_K
     pooled_total = _lnf_pool_lin(v_total_K, model, anchors)  # [d]

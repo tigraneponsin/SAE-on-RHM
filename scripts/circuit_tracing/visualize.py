@@ -31,7 +31,7 @@ Conventions
 
 CLI
 ---
-  python -m circuit_tracing.visualize --run_dir runs/circuit_trace/example
+  python -m scripts.circuit_tracing.visualize --run_dir runs/circuit_trace/example
   # output: runs/circuit_trace/example/circuit.png
 
 Outputs a single image at --out (PNG by default; format inferred from the
@@ -43,7 +43,7 @@ from __future__ import annotations
 import argparse
 import pickle
 
-from circuit_tracing.notation import sae_row_label, report_level
+from scripts.common.notation import sae_row_label, report_level
 from pathlib import Path
 
 import torch
@@ -600,7 +600,7 @@ def main():
         )
         written.append(final)
     if html_path is not None:
-        from circuit_tracing.visualize_interactive import render_html
+        from scripts.circuit_tracing.visualize_interactive import render_html
         final = render_html(
             run_dir=run_dir,
             out_path=html_path,

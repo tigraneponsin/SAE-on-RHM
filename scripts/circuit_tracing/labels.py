@@ -37,14 +37,11 @@ import torch
 
 # The shared per-feature labeling core lives under scripts/sae_sweep. Make it
 # importable the same way circuit_trace.py makes scripts.* importable.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-for _p in (str(_REPO_ROOT),
-           str(_REPO_ROOT / 'scripts' / 'sae_sweep'),
-           str(_REPO_ROOT / 'scripts' / 'common')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from absorption import per_feature_labels, _ArtifactTables  # noqa: E402
+from scripts.sae_sweep.absorption import per_feature_labels, _ArtifactTables  # noqa: E402
 
 SCHEME_NAMES = ('parent', 'level', 'whole_tree', 'reassigned')
 DEFAULT_PRIMARY = 'reassigned'

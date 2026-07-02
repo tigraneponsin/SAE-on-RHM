@@ -266,7 +266,7 @@ echo "LABEL_ALPHA:   ${LABEL_ALPHA}"
 echo "LABEL_PRIMARY: ${LABEL_PRIMARY}"
 
 set +e
-srun python -m circuit_tracing.circuit_trace_sweep \
+srun python -m scripts.circuit_tracing.circuit_trace_sweep \
     --train_output "${TRAIN_OUTPUT}" \
     --sae_ckpts "${SAE_CKPTS[@]}" \
     --sae_eval_artifacts "${EVAL_ARTS[@]}" \
@@ -303,7 +303,7 @@ if [[ ${EXIT_CODE} -eq 0 ]]; then
     echo ""
     echo "Plotting sweep -> ${OUT_DIR}/sweep_circuit.html"
     set +e
-    srun python -m circuit_tracing.visualize_sweep \
+    srun python -m scripts.circuit_tracing.visualize_sweep \
         --sweep_dir "${OUT_DIR}" \
         ${RN_ARGS[@]+"${RN_ARGS[@]}"}
     VIZ_EXIT=$?

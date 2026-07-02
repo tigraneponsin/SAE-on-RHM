@@ -1,4 +1,4 @@
-"""Self-contained smoke test for circuit_tracing.linearize.
+"""Self-contained smoke test for scripts.circuit_tracing.linearize.
 
 Builds a small MeanClassificationTransformer and a small
 MeanClassificationTransformerNoResidual from scratch, runs anchor capture on
@@ -11,7 +11,7 @@ a random input, and verifies:
   4. The materialized matrix at small sizes agrees with the closure on
      random vectors.
 
-Run with:  python -m circuit_tracing._smoketest
+Run with:  python -m scripts.circuit_tracing._smoketest
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from models.transformer import (
     FreeClassificationTransformer,
     FreeClassificationTransformerNoResidual,
 )
-from circuit_tracing.linearize import (
+from scripts.circuit_tracing.linearize import (
     capture_anchors, make_M, materialize_M, linearized_full_forward,
 )
 

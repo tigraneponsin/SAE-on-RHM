@@ -35,13 +35,17 @@ weights afterward, while circuit tracing reads the per-feature labels directly.
 from __future__ import annotations
 
 import math
+import sys
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 
-# torch_nanmin lives in min_entropy_diag; import lazily to avoid a hard sibling
-# dependency when only resolve_leak_table is wanted. See _nanmin below.
+# Ensure the repo root is importable so `scripts.*` / `datasets.*` resolve when
+# this module is imported by a loose script or via `-m`.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 
 def _entropy_nats(p):
@@ -51,12 +55,8 @@ def _entropy_nats(p):
 
 
 def _nanmin(x, dim):
-    """NaN-aware min + argmin along dim; mirrors min_entropy_diag.torch_nanmin.
-
-    Imported lazily so this module can be used (for resolve_leak_table) without
-    pulling in the plotting-heavy min_entropy_diag at import time.
-    """
-    from min_entropy_diag import torch_nanmin
+    """NaN-aware min + argmin along dim; delegates to entropy_core.torch_nanmin."""
+    from scripts.sae_sweep.entropy_core import torch_nanmin
     return torch_nanmin(x, dim=dim)
 
 
@@ -88,9 +88,9 @@ def resolve_leak_table(art, artifacts_dir, *, load_sae=None, resolve_rules=None,
       src       : rules source string ('artifact' / 'seed_rules_resampled').
     """
     if load_sae is None:
-        from sae_loading import load_sae as load_sae
+        from scripts.common.sae_loading import load_sae as load_sae
     if resolve_rules is None:
-        from sae_loading import resolve_rules as resolve_rules
+        from scripts.common.sae_loading import resolve_rules as resolve_rules
     if latent_prior is None:
         from datasets.random_hierarchy_model import latent_prior as latent_prior
 

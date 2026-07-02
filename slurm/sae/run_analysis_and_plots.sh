@@ -4,8 +4,8 @@
 # for one sweep directory, in a single job.
 #
 # This is a superset of run_analysis.sh: it runs the same streaming eval, then
-# additionally calls plot_lambda_metrics.py, plot_entropy_lambda.py, and
-# min_entropy_diag.py. Outputs land in two fixed subfolders of the sweep dir:
+# additionally calls plot_lambda_metrics.py and entropy_diag.py (aggregate + min).
+# Outputs land in two fixed subfolders of the sweep dir:
 #   <SWEEP_DIR>/analysis_files/   -- *.sae_eval.pt, sweep_metrics.csv, csvs
 #   <SWEEP_DIR>/analysis_plots/   -- lambda_metrics.png, entropy_lambda_layer*.png,
 #                                    min_entropy_diag_*.png
@@ -185,7 +185,7 @@ set -e
 echo ""
 echo "[3/4] Entropy-lambda plots -> ${PLOTS_DIR}/entropy_lambda_layer*.png"
 set +e
-python "${REPO_DIR}/scripts/sae_sweep/plot_entropy_lambda.py" \
+python "${REPO_DIR}/scripts/sae_sweep/entropy_diag.py" aggregate \
     --artifacts_dir "${ANALYSIS_DIR}" \
     --outfile_prefix "${PLOTS_DIR}/entropy_lambda" \
     --err_tolerance "${ERR_TOL}" \
@@ -199,7 +199,7 @@ set -e
 echo ""
 echo "[4/4] Min-entropy diag -> ${PLOTS_DIR}/min_entropy_diag_*.png"
 set +e
-python "${REPO_DIR}/scripts/sae_sweep/min_entropy_diag.py" \
+python "${REPO_DIR}/scripts/sae_sweep/entropy_diag.py" min \
     --artifacts_dir "${ANALYSIS_DIR}" \
     --out_plot_prefix "${PLOTS_DIR}/min_entropy_diag" \
     --csv_path "${CSV_PATH}" \

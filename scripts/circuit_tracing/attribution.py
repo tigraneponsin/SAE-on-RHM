@@ -1,6 +1,6 @@
 """Edge-weight computation for circuit tracing.
 
-Conventions (matching .docs/circuit_tracing_handoff.md and our linearize.py):
+Conventions (see docs/project_pipelines.md section 8 and our linearize.py):
 
   - x_k          : [N, d]   post-block residual stream at layer k.
   - z_k          : [N, F_k] raw post-ReLU SAE encoder output (no decoder norm).
@@ -18,7 +18,7 @@ The SAE pre-activation at layer k+1 is computed on the *scaled* input:
                       + b_enc_{k+1}[j].
 
 We decompose x_{k+1} = block_{k+1}(x_k) = block_{k+1}(x_hat_k + e_k) and use
-the linearized form M_{k+1} from circuit_tracing.linearize. With M_{k+1}
+the linearized form M_{k+1} from scripts.circuit_tracing.linearize. With M_{k+1}
 defined as a centered map (M(0) = 0), only the perturbation parts contribute
 to attribution; the constant offset is bundled into the bias.
 
@@ -63,7 +63,7 @@ from __future__ import annotations
 
 import torch
 
-from circuit_tracing.linearize import (
+from scripts.circuit_tracing.linearize import (
     FullAnchors, make_M, materialize_M,
     _layernorm_apply, _pool_weights,
 )

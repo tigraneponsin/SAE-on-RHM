@@ -70,7 +70,7 @@ matched latent is:
 - label vocabulary: `v` for levels 1..L-1, `n` for level 0.
 
 This mapping is hard-coded in the streaming-eval target layout, the tree
-reconstruction, and the circuit-tracing labels (`circuit_tracing/labels.py`).
+reconstruction, and the circuit-tracing labels (`scripts/circuit_tracing/labels.py`).
 
 ---
 
@@ -312,21 +312,24 @@ Plotting / diagnostics over a sweep (all in `scripts/sae_sweep/`):
   thresholds) and classification error vs lambda_1, per layer.
 - `plot_lambda_metrics_per_token.py`: same but keeping the token-position
   axis (subset selection, per-token curves).
-- `plot_entropy_lambda.py`: normalized entropy aggregates vs lambda_1, per
-  position and averaged.
+- `entropy_diag.py`: the unified entropy diagnostic, one CLI with three
+  subcommands (all three weight schemes fire/raw/dec). `aggregate` plots the
+  stored normalized entropy vs lambda_1 per position; `min` finds, per feature,
+  the SAME-LEVEL latent group minimizing its conditional entropy and draws the
+  parent/level/unconstrained curves plus the leakage fraction; `splitcheck`
+  adds the feature-splitting reassignment (child pinned beyond the RHM leak ->
+  reassigned up one level). Numeric helpers live in `entropy_core.py`; the
+  per-feature labeling core shared with circuit tracing is `absorption.py`.
+- `feature_splitting_alpha_sweep.py`: sweeps the split-check alpha threshold
+  (reassign fraction and ratio histogram at a chosen lambda).
 - `plot_rank_magnitude.py`: histograms of per-feature mean activation
   magnitudes (dominant features vs near-zero tail).
-- `plot_loss_curves.py` / `plot_multi_sweep.py`: SAE training/eval loss
-  curves, single or cross-sweep comparison.
-- `decoder_cosine_diag.py` (new): c_dec = mean |cos| over distinct decoder
-  column pairs (Chanin & Garriga-Alonso, arXiv:2508.16560); its minimum over
-  the lambda sweep flags the L0 with least feature mixing. Optionally
-  restricted to active (ever-firing) latents.
-- `min_entropy_diag.py` (new): for each feature, find the SAME-LEVEL latent
-  group (any position at the matched level) minimizing its conditional
-  entropy; the gap (own-parent entropy minus min) and the "leakage fraction"
-  (features whose best group is not their own parent) diagnose cross-subtree
-  leakage that the standard own-parent-conditioned entropy misreads.
+- `plot_loss_curves.py`: SAE training/eval loss curves for one sweep, or a
+  cross-sweep comparison with `--sweep_dirs` (formerly `plot_multi_sweep.py`).
+- `decoder_cosine_diag.py`: c_dec = mean |cos| over distinct decoder column
+  pairs (Chanin & Garriga-Alonso, arXiv:2508.16560); its minimum over the
+  lambda sweep flags the L0 with least feature mixing. Optionally restricted to
+  active (ever-firing) latents.
 
 ---
 
@@ -380,7 +383,7 @@ top-K feature selectivity plots from the eval artifacts
 
 ## 8. Circuit tracing pipeline
 
-Package: `circuit_tracing/`. The most recent pipeline; produces per-input
+Package: `scripts/circuit_tracing/`. The most recent pipeline; produces per-input
 attribution graphs through the SAE feature bases, in the spirit of
 attribution graphs / transcoder circuit work, adapted to this architecture.
 
@@ -543,7 +546,7 @@ wrapper).
 - `scripts/sae_tree_reconstruction/`: tree decoding from SAE features.
 - `scripts/intervention/`: residual-stream ablations.
 - `scripts/sae_direct_analysis/`: per-value feature selectivity plots.
-- `circuit_tracing/`: linearization, attribution, pruning, grouping, fidelity,
+- `scripts/circuit_tracing/`: linearization, attribution, pruning, grouping, fidelity,
   visualization, single-run and sweep CLIs.
 - `slurm/`: cluster launchers mirroring all of the above (these record the
   actually-used hyperparameter values).

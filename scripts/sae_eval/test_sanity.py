@@ -1,6 +1,6 @@
 """Four cheap acceptance checks for the entropy machinery.
 
-From .docs/entropy_specificity_handoff.md, section 'Sanity / acceptance checks'.
+Entropy sanity / acceptance checks (see docs/sae_eval_guide.md for the metrics).
 All run on synthetic tensors or a small RHM instance; none require a trained
 model. Exit code is non-zero if any check fails.
 

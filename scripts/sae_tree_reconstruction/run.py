@@ -5,7 +5,7 @@ Given one .sae_eval.pt artifact per transformer layer (covering layers
 latent tree for each eval input by aggregating per-feature evidence
 P(Z_{l,j} = z | f_i > 0).
 
-Recipe (from .docs/simple_tree_reconstruction.md):
+Recipe (see docs/project_pipelines.md section 6):
 
   cond_prob[i][z] = joint_fire_count / firing_count       (from artifact)
   alive(i, p)     = firing_rate[p, i] > 0                  (from artifact)

@@ -7,7 +7,7 @@ attribution DAG for a single input and save:
   nodes.pt, edges.pt, fidelity.pt, graph.gpickle.
 
 Usage:
-  python -m circuit_tracing.circuit_trace \
+  python -m scripts.circuit_tracing.circuit_trace \
       --train_output /path/transformer.pt \
       --sae_ckpts L0.pt L1.pt L2.pt \
       --sae_eval_artifacts L0.sae_eval.pt L1.sae_eval.pt L2.sae_eval.pt \
@@ -31,7 +31,7 @@ from pathlib import Path
 import torch
 
 # Make REPO_ROOT importable for `scripts.*` and `models.*`.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -39,26 +39,26 @@ import init  # noqa: E402
 from datasets.random_hierarchy_model import sample_trees  # noqa: E402
 from scripts.common.sae_loading import load_transformer, load_sae  # noqa: E402
 
-from circuit_tracing.linearize import (
+from scripts.circuit_tracing.linearize import (
     capture_anchors, linearized_full_forward, _unwrap_compiled,
 )
-from circuit_tracing.attribution import (
+from scripts.circuit_tracing.attribution import (
     sae_forward, sae_forward_pooled, edges_layer_to_layer,
     edges_layer_to_pooled,
     edges_embedding_to_layer0,
     edges_final_layer_to_logits_per_class,
     edges_pooled_final_to_logits_per_class,
 )
-from circuit_tracing.labels import build_labels_per_layer
-from absorption import leak_table_from_rules
-from circuit_tracing.dag import (
+from scripts.circuit_tracing.labels import build_labels_per_layer
+from scripts.sae_sweep.absorption import leak_table_from_rules
+from scripts.circuit_tracing.dag import (
     assemble_edges, build_node_table, to_networkx,
 )
-from circuit_tracing.prune import prune_indirect_influence
-from circuit_tracing.fidelity import (
+from scripts.circuit_tracing.prune import prune_indirect_influence
+from scripts.circuit_tracing.fidelity import (
     compute_pre_prune_fidelity, compute_postprune_alignment,
 )
-from circuit_tracing.grouping import group_by_signature
+from scripts.circuit_tracing.grouping import group_by_signature
 
 
 # ---------------------------------------------------------------------------

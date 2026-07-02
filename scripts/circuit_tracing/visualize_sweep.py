@@ -12,7 +12,7 @@ index from the figure layout, and shows only the trace group whose
 `meta.cell == [i, j]` matches.
 
 Usage:
-    python -m circuit_tracing.visualize_sweep --sweep_dir <dir>
+    python -m scripts.circuit_tracing.visualize_sweep --sweep_dir <dir>
 
 Outputs:
     <sweep_dir>/sweep_circuit.html  (single self-contained file).
@@ -27,7 +27,7 @@ from pathlib import Path
 import torch
 
 # Reuse the single-config helpers verbatim.
-from circuit_tracing.visualize_interactive import (
+from scripts.circuit_tracing.visualize_interactive import (
     _select_kept_ungrouped, _select_kept_grouped,
     _layout_ungrouped, _layout_grouped,
     _edge_traces,
@@ -36,7 +36,7 @@ from circuit_tracing.visualize_interactive import (
     _add_legend_traces,
     build_figure,
 )
-from circuit_tracing.notation import (
+from scripts.common.notation import (
     sae_row_label, report_level,
 )
 

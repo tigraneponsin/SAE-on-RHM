@@ -35,8 +35,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from notation import sae_label, add_report_flag
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.common.notation import sae_label, add_report_flag
 
 
 # Per-position metric columns averaged / drawn per token.

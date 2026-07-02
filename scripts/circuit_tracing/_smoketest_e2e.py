@@ -52,20 +52,20 @@ from models.transformer import (
     MeanClassificationTransformer, MeanClassificationTransformerNoResidual,
 )
 from models.sae import SparseAutoencoder
-from circuit_tracing.linearize import (
+from scripts.circuit_tracing.linearize import (
     capture_anchors, linearized_full_forward,
 )
-from circuit_tracing.attribution import (
+from scripts.circuit_tracing.attribution import (
     sae_forward, sae_forward_pooled, edges_layer_to_layer,
     edges_layer_to_pooled,
     edges_embedding_to_layer0,
     edges_final_layer_to_logits_per_class,
     edges_pooled_final_to_logits_per_class,
 )
-from circuit_tracing.dag import (
+from scripts.circuit_tracing.dag import (
     assemble_edges, build_node_table, to_networkx,
 )
-from circuit_tracing.prune import prune_indirect_influence
+from scripts.circuit_tracing.prune import prune_indirect_influence
 
 
 def _build_pseudo_eval_artifact(layer_id, latent_dim, N, s, L, n, v, m,
@@ -304,8 +304,8 @@ def main():
           f'{len(err_to_logit)} err->logit, {n_} classes')
 
     # Labels (all four schemes)
-    from circuit_tracing.labels import build_labels_per_layer
-    from absorption import leak_table_from_rules
+    from scripts.circuit_tracing.labels import build_labels_per_layer
+    from scripts.sae_sweep.absorption import leak_table_from_rules
     leak_norms = [leak_table_from_rules(rules, art['rhm'],
                                         art['H_theoretical'])[0]
                   for art in eval_artifacts]
@@ -518,8 +518,8 @@ def pooled_main():
     print(f'pooled final-layer completeness OK ({len(feat_to_logit)} feat->logit, '
           f'{len(err_to_logit)} err->logit)')
 
-    from circuit_tracing.labels import build_labels_per_layer
-    from absorption import leak_table_from_rules
+    from scripts.circuit_tracing.labels import build_labels_per_layer
+    from scripts.sae_sweep.absorption import leak_table_from_rules
     leak_norms = [leak_table_from_rules(rules, art['rhm'],
                                         art['H_theoretical'])[0]
                   for art in eval_artifacts]
@@ -564,7 +564,7 @@ def pooled_main():
           f'completeness={diag["completeness_score"]:.3f}')
 
     # Fidelity guards: pooled final feat->feat slot is None.
-    from circuit_tracing.fidelity import (
+    from scripts.circuit_tracing.fidelity import (
         compute_pre_prune_fidelity, compute_postprune_alignment,
     )
     pre_fid = compute_pre_prune_fidelity(

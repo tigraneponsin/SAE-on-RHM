@@ -16,7 +16,7 @@ Features:
     entropy.
 
 Usage:
-  python -m circuit_tracing.visualize_interactive --run_dir <dir>
+  python -m scripts.circuit_tracing.visualize_interactive --run_dir <dir>
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from pathlib import Path
 
 import torch
 
-from circuit_tracing.notation import (
+from scripts.common.notation import (
     sae_row_label, report_level, level_ring_color, LEVEL_RING_PALETTE,
 )
 

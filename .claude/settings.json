@@ -62,7 +62,16 @@
       "Bash(SD=\"/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_4_wdecay_0.0001_nores/circuit_sweeps/input4\"; sed -n '1,60p' \"$SD/circuit_trace_sweep.out\")",
       "Bash(bash slurm/intervention/Job_ablate_nores_v8_L4_m8.sh)",
       "Bash(bash slurm/intervention/Job_ablate_meanclass_v8_L4_m8.sh)",
-      "Bash(python -c 'import json; d=json.load\\(open\\('\\\\''/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_16_wdecay_0.0001_dropout_0.1/circuit_sweeps/input0/sweep_summary.json'\\\\''\\)\\); print\\({k:d[k] for k in ['\\\\''node_thresholds'\\\\'','\\\\''edge_thresholds'\\\\'','\\\\''sink_mode'\\\\'','\\\\''input_idx'\\\\'','\\\\''eval_seed'\\\\'','\\\\''pooled_last_layer'\\\\''] if k in d}\\)')"
+      "Bash(python -c 'import json; d=json.load\\(open\\('\\\\''/work/pcsl/ponsin/Mean_Transformer/Small_SAE/latent_dim_4*512/v_16_L_3_m_16_wdecay_0.0001_dropout_0.1/circuit_sweeps/input0/sweep_summary.json'\\\\''\\)\\); print\\({k:d[k] for k in ['\\\\''node_thresholds'\\\\'','\\\\''edge_thresholds'\\\\'','\\\\''sink_mode'\\\\'','\\\\''input_idx'\\\\'','\\\\''eval_seed'\\\\'','\\\\''pooled_last_layer'\\\\''] if k in d}\\)')",
+      "Bash(git rm *)",
+      "Bash(awk '{print $2}')",
+      "Bash(grep -vE \"^\\(models|datasets|init|measures|scripts|circuit_tracing|os|sys|math|json|time|argparse|itertools|functools|collections|pathlib|typing|copy|random|warnings|dataclasses|__future__\\)$\")",
+      "Bash(git mv *)",
+      "Bash(perl -pi -e 's/_REPO_ROOT = Path\\\\\\(__file__\\\\\\)\\\\.resolve\\\\\\(\\\\\\)\\\\.parent\\\\.parent\\\\b/_REPO_ROOT = Path\\(__file__\\).resolve\\(\\).parents[2]/' scripts/circuit_tracing/circuit_trace.py scripts/circuit_tracing/circuit_trace_sweep.py scripts/circuit_tracing/labels.py)",
+      "Bash(python -c \"import scripts.sae_sweep.plot_loss_curves; print\\('plot_loss_curves imports OK'\\)\")",
+      "Bash(perl -pi -e 's/sys\\\\.path\\\\.insert\\\\\\(0, str\\\\\\(Path\\\\\\(__file__\\\\\\)\\\\.resolve\\\\\\(\\\\\\)\\\\.parent\\\\\\)\\\\\\)/sys.path.insert\\(0, str\\(Path\\(__file__\\).resolve\\(\\).parents[2]\\)\\)/' scripts/sae_sweep/plot_lambda_metrics_per_token.py)",
+      "Bash(perl -pi -e 's/^from notation import/from scripts.common.notation import/' scripts/sae_sweep/plot_lambda_metrics_per_token.py)",
+      "Bash(perl -pi -e 's{python -m circuit_tracing\\\\.}{python -m scripts.circuit_tracing.}g' slurm/sae/run_circuit_trace.sh)"
     ],
     "additionalDirectories": [
       "/tmp",

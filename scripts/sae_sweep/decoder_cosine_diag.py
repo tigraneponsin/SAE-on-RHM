@@ -48,8 +48,8 @@ import numpy as np
 import torch
 
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from notation import add_report_flag
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.common.notation import add_report_flag
 
 
 def pairwise_decoder_cosine_similarity(w_dec, latent_dim_axis, active_mask=None):

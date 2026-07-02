@@ -47,8 +47,9 @@ Layer `k` is expected to resolve RHM level `L-1-k` (bottom-up composition).
 - Transformer: `config`, `output.model`, `output.rules`, `output.best`, `output.dynamics`
 - SAE: `config`, `sae_layers`, `sae_state[layer_id]`, `sae_metrics[layer_id]`, `sae_training_setup.{sae_activation_source, sae_token_idx, act_scale}`
 
-### Linear Probe Target Mapping
-For probe at layer `k`, token `p` (0-based real index):
+### Layer-to-Level Target Mapping
+Matched latent for a feature at layer `k`, token `p` (0-based real index). Used by
+the SAE eval, tree reconstruction, and circuit-tracing labels:
 - Target level: `L-1-k`
 - Ancestor index: `p // s^(1+k)`
 - Label vocab: `v` (levels 1..L-1) or `n` (level 0)
@@ -56,4 +57,8 @@ For probe at layer `k`, token `p` (0-based real index):
 ### Entry Points
 - `main.py`: train transformer
 - `train_sae.py`: train SAE on frozen transformer
-- `sae_sweep/generate_sweep.py` / `eval_sweep.py`: sweep generation and evaluation
+- `scripts/sae_sweep/generate_sweep.py` + `run_one.py`: SAE sweep generation/running
+- `scripts/sae_eval/run.py`: streaming SAE evaluation
+- `scripts/sae_tree_reconstruction/run.py`: decode RHM tree from SAE features
+- `scripts/intervention/ablate_tokens.py`: residual-stream ablations
+- `scripts/circuit_tracing/circuit_trace.py` (+ `circuit_trace_sweep.py`): per-input circuit tracing
