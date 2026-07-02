@@ -1,0 +1,36 @@
+[
+  {"name": "baseline",
+   "interventions": []},
+
+  {"name": "L0_dead_mean",
+   "interventions": [{"layer": 0, "positions": [1, 3, 5, 7], "mode": "mean"}]},
+  {"name": "L0_dead_zero",
+   "interventions": [{"layer": 0, "positions": [1, 3, 5, 7], "mode": "zero"}]},
+  {"name": "L0_dead_resample",
+   "interventions": [{"layer": 0, "positions": [1, 3, 5, 7], "mode": "resample"}]},
+
+  {"name": "L0_live_mean",
+   "interventions": [{"layer": 0, "positions": [0, 2, 4, 6], "mode": "mean"}]},
+  {"name": "L0_live_zero",
+   "interventions": [{"layer": 0, "positions": [0, 2, 4, 6], "mode": "zero"}]},
+  {"name": "L0_live_resample",
+   "interventions": [{"layer": 0, "positions": [0, 2, 4, 6], "mode": "resample"}]},
+
+  {"name": "L1_dead_mean",
+   "interventions": [{"layer": 1, "positions": [1, 2, 3, 5, 6, 7], "mode": "mean"}]},
+  {"name": "L1_dead_zero",
+   "interventions": [{"layer": 1, "positions": [1, 2, 3, 5, 6, 7], "mode": "zero"}]},
+  {"name": "L1_dead_resample",
+   "interventions": [{"layer": 1, "positions": [1, 2, 3, 5, 6, 7], "mode": "resample"}]},
+
+  {"name": "L1_live_mean",
+   "interventions": [{"layer": 1, "positions": [0, 4], "mode": "mean"}]},
+  {"name": "L1_live_zero",
+   "interventions": [{"layer": 1, "positions": [0, 4], "mode": "zero"}]},
+  {"name": "L1_live_resample",
+   "interventions": [{"layer": 1, "positions": [0, 4], "mode": "resample"}]},
+
+  {"name": "L0dead_L1dead_mean",
+   "interventions": [{"layer": 0, "positions": [1, 3, 5, 7], "mode": "mean"},
+                     {"layer": 1, "positions": [1, 2, 3, 5, 6, 7], "mode": "mean"}]}
+]

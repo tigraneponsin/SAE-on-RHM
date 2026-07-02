@@ -1,0 +1,35 @@
+[
+  {"name": "baseline", "interventions": []},
+
+  {"name": "L2_pos0_zero",     "interventions": [{"layer": 2, "positions": [0], "mode": "zero"}]},
+  {"name": "L2_pos0_mean",     "interventions": [{"layer": 2, "positions": [0], "mode": "mean"}]},
+  {"name": "L2_pos0_resample", "interventions": [{"layer": 2, "positions": [0], "mode": "resample"}]},
+
+  {"name": "L2_pos1_zero",     "interventions": [{"layer": 2, "positions": [1], "mode": "zero"}]},
+  {"name": "L2_pos1_mean",     "interventions": [{"layer": 2, "positions": [1], "mode": "mean"}]},
+  {"name": "L2_pos1_resample", "interventions": [{"layer": 2, "positions": [1], "mode": "resample"}]},
+
+  {"name": "L2_pos2_zero",     "interventions": [{"layer": 2, "positions": [2], "mode": "zero"}]},
+  {"name": "L2_pos2_mean",     "interventions": [{"layer": 2, "positions": [2], "mode": "mean"}]},
+  {"name": "L2_pos2_resample", "interventions": [{"layer": 2, "positions": [2], "mode": "resample"}]},
+
+  {"name": "L2_pos3_zero",     "interventions": [{"layer": 2, "positions": [3], "mode": "zero"}]},
+  {"name": "L2_pos3_mean",     "interventions": [{"layer": 2, "positions": [3], "mode": "mean"}]},
+  {"name": "L2_pos3_resample", "interventions": [{"layer": 2, "positions": [3], "mode": "resample"}]},
+
+  {"name": "L2_pos4_zero",     "interventions": [{"layer": 2, "positions": [4], "mode": "zero"}]},
+  {"name": "L2_pos4_mean",     "interventions": [{"layer": 2, "positions": [4], "mode": "mean"}]},
+  {"name": "L2_pos4_resample", "interventions": [{"layer": 2, "positions": [4], "mode": "resample"}]},
+
+  {"name": "L2_pos5_zero",     "interventions": [{"layer": 2, "positions": [5], "mode": "zero"}]},
+  {"name": "L2_pos5_mean",     "interventions": [{"layer": 2, "positions": [5], "mode": "mean"}]},
+  {"name": "L2_pos5_resample", "interventions": [{"layer": 2, "positions": [5], "mode": "resample"}]},
+
+  {"name": "L2_pos6_zero",     "interventions": [{"layer": 2, "positions": [6], "mode": "zero"}]},
+  {"name": "L2_pos6_mean",     "interventions": [{"layer": 2, "positions": [6], "mode": "mean"}]},
+  {"name": "L2_pos6_resample", "interventions": [{"layer": 2, "positions": [6], "mode": "resample"}]},
+
+  {"name": "L2_pos7_zero",     "interventions": [{"layer": 2, "positions": [7], "mode": "zero"}]},
+  {"name": "L2_pos7_mean",     "interventions": [{"layer": 2, "positions": [7], "mode": "mean"}]},
+  {"name": "L2_pos7_resample", "interventions": [{"layer": 2, "positions": [7], "mode": "resample"}]}
+]

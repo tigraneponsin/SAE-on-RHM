@@ -1,6 +1,7 @@
 import os
 import sys
 import copy
+import itertools
 import argparse
 
 # Ensure root SAE-on-RHM init.py is imported, not from other sources
@@ -27,8 +28,47 @@ def parse_sae_layers(sae_layers, num_layers):
     return sorted(set(layers))
 
 
+def _select_tokens(act, activation_source, is_cls_model, token_idx, pool_w=None):
+    """Select tokens from a (B, T, D) activation tensor based on source mode.
+
+    Returns a (B, T', D) tensor where T' depends on activation_source:
+      - 'cls_token': T'=1, the [CLS] position
+      - 'one_token': T'=1, a single real-token position (offset by 1 for CLS models)
+      - 'all_tokens': all real tokens (skipping [CLS] for CLS models)
+      - 'mean_pooled': T'=1, pooled over the sequence dim. The caller is expected
+                      to hook `model.ln_f` so `act` is already post-ln_f. If
+                      pool_w (a [T] weight vector) is given, the pooling is a
+                      learned weighted sum sum_p pool_w[p]*act[:,p,:]; otherwise
+                      it is a uniform mean (matching meanclass models).
+    """
+    if activation_source == 'cls_token':
+        return act[:, :1, :]
+    elif activation_source == 'one_token':
+        offset = 1 if is_cls_model else 0
+        return act[:, offset + token_idx : offset + token_idx + 1, :]
+    elif activation_source == 'mean_pooled':
+        if pool_w is not None:
+            w = pool_w.to(device=act.device, dtype=act.dtype)
+            return (act * w.view(1, -1, 1)).sum(dim=1, keepdim=True)
+        return act.mean(dim=1, keepdim=True)
+    elif is_cls_model:
+        return act[:, 1:, :]
+    return act
+
+
+def _hook_module(model, layer_id, activation_source):
+    """Return the module to attach the activation-capture hook to.
+
+    For 'mean_pooled', hook the final LayerNorm so the captured tensor is
+    post-ln_f. For all other modes, hook the requested block (pre-ln_f).
+    """
+    if activation_source == 'mean_pooled':
+        return model.ln_f
+    return model.blocks[layer_id]
+
+
 def _compute_activation_scale(model, train_loader, layer_id, activation_source,
-                               is_cls_model, token_idx, device):
+                               is_cls_model, token_idx, device, pool_w=None):
     """Compute a scalar scale so that E[||scale * x||_2] = sqrt(embedding_dim).
 
     This normalizes activations before feeding them to the SAE, making lambda
@@ -36,7 +76,7 @@ def _compute_activation_scale(model, train_loader, layer_id, activation_source,
     Returns the scale factor (float). Prints the pre-scaling mean norm.
     """
     buf = []
-    hook = model.blocks[layer_id].register_forward_hook(
+    hook = _hook_module(model, layer_id, activation_source).register_forward_hook(
         lambda _m, _i, o: buf.append(o.detach())
     )
     sum_norm = 0.0
@@ -47,13 +87,7 @@ def _compute_activation_scale(model, train_loader, layer_id, activation_source,
             if not buf:
                 continue
             act = buf.pop(0)
-            if activation_source == 'cls_token':
-                act = act[:, :1, :]
-            elif activation_source == 'one_token':
-                offset = 1 if is_cls_model else 0
-                act = act[:, offset + token_idx : offset + token_idx + 1, :]
-            elif is_cls_model:
-                act = act[:, 1:, :]
+            act = _select_tokens(act, activation_source, is_cls_model, token_idx, pool_w)
             act = act.reshape(-1, act.size(-1))
             if act.numel() == 0:
                 continue
@@ -97,28 +131,22 @@ def _sae_loss_chunked(sae, act, lambda_l1, chunk_tokens=None):
 
 def _collect_eval_loss(sae, model, eval_loader, layer_id, activation_source,
                        is_cls_model, token_idx, lambda_l1, device,
-                       eval_chunk_tokens=None, act_scale=1.0):
+                       eval_chunk_tokens=None, act_scale=1.0, pool_w=None):
     """Average SAE loss over the full eval_loader at the current SAE weights.
-    Returns (total, recon, sparse) averaged across all batches."""
+    Returns (total, recon, sparse) averaged across all eval tokens."""
     buf = []
-    hook = model.blocks[layer_id].register_forward_hook(
+    hook = _hook_module(model, layer_id, activation_source).register_forward_hook(
         lambda _m, _i, o: buf.append(o.detach())
     )
     sum_total = sum_recon = sum_sparse = 0.0
-    n = 0
+    n_tokens = 0
     with torch.no_grad():
         for inputs, _ in eval_loader:
             model(inputs.to(device))
             if not buf:
                 continue
             act = buf.pop(0)
-            if activation_source == 'cls_token':
-                act = act[:, :1, :]
-            elif activation_source == 'one_token':
-                offset = 1 if is_cls_model else 0
-                act = act[:, offset + token_idx : offset + token_idx + 1, :]
-            elif is_cls_model:
-                act = act[:, 1:, :]
+            act = _select_tokens(act, activation_source, is_cls_model, token_idx, pool_w)
             act = act.reshape(-1, act.size(-1))
             if act.numel() == 0:
                 continue
@@ -126,18 +154,30 @@ def _collect_eval_loss(sae, model, eval_loader, layer_id, activation_source,
             total, recon, sparse = _sae_loss_chunked(
                 sae, act, lambda_l1=lambda_l1, chunk_tokens=eval_chunk_tokens,
             )
-            sum_total += total
-            sum_recon += recon
-            sum_sparse += sparse
-            n += 1
+            bs = act.size(0)
+            sum_total += total * bs
+            sum_recon += recon * bs
+            sum_sparse += sparse * bs
+            n_tokens += bs
     hook.remove()
-    if n == 0:
+    torch.cuda.empty_cache()
+    if n_tokens == 0:
         return float('nan'), float('nan'), float('nan')
-    return sum_total / n, sum_recon / n, sum_sparse / n
+    return sum_total / n_tokens, sum_recon / n_tokens, sum_sparse / n_tokens
 
 
 def train_sae_posthoc(model, train_loader, config, eval_loader=None):
-    assert config.model in {'transformer_class', 'transformer_meanclass'}, 'post-hoc SAE is currently implemented for transformer_class or transformer_meanclass only'
+    assert config.model in {
+        'transformer_class',
+        'transformer_meanclass',
+        'transformer_meanclass_nores',
+        'transformer_freeclass',
+        'transformer_freeclass_nores',
+    }, (
+        'post-hoc SAE is currently implemented for transformer_class, '
+        'transformer_meanclass, transformer_meanclass_nores, '
+        'transformer_freeclass, or transformer_freeclass_nores only'
+    )
     assert config.input_format == 'long', f'post-hoc SAE on {config.model} requires input_format=long'
 
     model.eval()
@@ -156,12 +196,34 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
     )
     log_steps_set.add(config.sae_steps)
     activation_source = str(config.sae_activation_source).lower()
-    assert activation_source in {'all_tokens', 'cls_token', 'one_token'}, (
+    assert activation_source in {'all_tokens', 'cls_token', 'one_token', 'mean_pooled'}, (
         f"sae_activation_source={config.sae_activation_source} is invalid. "
-        "Use one of: all_tokens, cls_token, one_token"
+        "Use one of: all_tokens, cls_token, one_token, mean_pooled"
     )
-    if config.model == 'transformer_meanclass' and activation_source == 'cls_token':
-        raise ValueError('transformer_meanclass has no [CLS] token. Use sae_activation_source=all_tokens or one_token.')
+    # Models that pool over the sequence (no [CLS] token): meanclass and the
+    # learned-pooling freeclass variants.
+    pooled_models = {
+        'transformer_meanclass', 'transformer_meanclass_nores',
+        'transformer_freeclass', 'transformer_freeclass_nores',
+    }
+    if config.model in pooled_models and activation_source == 'cls_token':
+        raise ValueError(
+            f'{config.model} has no [CLS] token. '
+            'Use sae_activation_source=all_tokens or one_token.'
+        )
+    if activation_source == 'mean_pooled':
+        if config.model not in pooled_models:
+            raise ValueError(
+                f'sae_activation_source=mean_pooled requires a meanclass or '
+                f'freeclass transformer, but config.model={config.model}.'
+            )
+        last_layer = int(model.num_layers) - 1
+        if layer_ids != [last_layer]:
+            print(
+                f'NOTE: mean_pooled mode ignores sae_layer={layer_ids}; '
+                f'forcing layer_ids=[{last_layer}] (the last block).'
+            )
+            layer_ids = [last_layer]
 
     token_idx = int(getattr(config, 'sae_token_idx', 0))
     if activation_source == 'one_token':
@@ -172,6 +234,17 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
         )
 
     is_cls_model = (config.model == 'transformer_class')
+
+    # Learned pooling weights for freeclass models; None for meanclass (uniform
+    # mean fallback) and all non-pooled modes. Used only by mean_pooled.
+    pool_w = None
+    if activation_source == 'mean_pooled':
+        pool_weights_fn = getattr(model, 'pool_weights', None)
+        if callable(pool_weights_fn):
+            pool_w = pool_weights_fn().detach()
+            print(f'  using learned pooling weights (freeclass): '
+                  f'min={float(pool_w.min()):.4g}, max={float(pool_w.max()):.4g}')
+
     lambda_warmup_frac = float(getattr(config, 'sae_lambda_warmup_frac', 0.05))
     lr_decay_frac = float(getattr(config, 'sae_lr_decay_frac', 0.2))
     act_scales = {}
@@ -187,10 +260,12 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
             print(f'Computing activation scale for layer {layer_id} ...')
             act_scale = _compute_activation_scale(
                 model, train_loader, layer_id, activation_source,
-                is_cls_model, token_idx, config.device,
+                is_cls_model, token_idx, config.device, pool_w=pool_w,
             )
         act_scales[layer_id] = act_scale
 
+        # Seed SAE initialization for reproducibility across runs.
+        torch.manual_seed(int(config.seed_sample) + 1000 + layer_id)
         sae = models.SparseAutoencoder(
             input_dim=model.embedding_dim,
             latent_dim=latent_dim,
@@ -198,134 +273,124 @@ def train_sae_posthoc(model, train_loader, config, eval_loader=None):
         optimizer = optim.AdamW(sae.parameters(), lr=config.sae_lr, weight_decay=0.0)
 
         activation_buffer = []
-        hook = model.blocks[layer_id].register_forward_hook(
+        hook = _hook_module(model, layer_id, activation_source).register_forward_hook(
             lambda _m, _i, o: activation_buffer.append(o.detach())
         )
 
         warmup_steps = int(lambda_warmup_frac * config.sae_steps)
         decay_start = int((1.0 - lr_decay_frac) * config.sae_steps)
 
-        step = 0
         last_total = last_recon = last_sparse = 0.0
-        last_z = None
+        last_act = None
         init_logged = False
         curve_steps, curve_total, curve_recon, curve_sparse = [], [], [], []
         eval_curve_steps, eval_curve_total, eval_curve_recon, eval_curve_sparse = [], [], [], []
 
-        while step < config.sae_steps:
-            for inputs, _ in train_loader:
+        loader_iter = iter(itertools.cycle(train_loader))
+        for step in range(config.sae_steps):
+            inputs, _ = next(loader_iter)
+            with torch.no_grad():
+                model(inputs.to(config.device))
+
+            if not activation_buffer:
+                continue
+
+            act = activation_buffer.pop(0)
+            act = _select_tokens(act, activation_source, is_cls_model, token_idx, pool_w)
+            act = act.reshape(-1, act.size(-1))
+            act = act * act_scale
+
+            if batch_limit is not None and act.size(0) > batch_limit:
+                act = act[torch.randperm(act.size(0), device=act.device)[:batch_limit]]
+
+            # lambda warmup: ramp from 0 to sae_lambda_l1 over first warmup_steps
+            if warmup_steps > 0 and step < warmup_steps:
+                current_lambda = config.sae_lambda_l1 * (step / warmup_steps)
+            else:
+                current_lambda = config.sae_lambda_l1
+
+            if not init_logged:
                 with torch.no_grad():
-                    model(inputs.to(config.device))
-
-                if not activation_buffer:
-                    continue
-
-                # Token selection depends on architecture and activation_source:
-                # - transformer_class: [CLS] at position 0, real tokens at 1..T
-                # - transformer_meanclass: no [CLS], real tokens at 0..T-1
-                # For one_token: select a single real token by its 0-based index,
-                #   skipping [CLS] when present (offset=1 for transformer_class).
-                act = activation_buffer.pop(0)
-                if activation_source == 'cls_token':
-                    act = act[:, :1, :]
-                elif activation_source == 'one_token':
-                    offset = 1 if config.model == 'transformer_class' else 0
-                    act = act[:, offset + token_idx : offset + token_idx + 1, :]
-                elif config.model == 'transformer_class':
-                    act = act[:, 1:, :]
-                act = act.reshape(-1, act.size(-1))
-                act = act * act_scale
-
-                if batch_limit is not None and act.size(0) > batch_limit:
-                    act = act[torch.randperm(act.size(0), device=act.device)[:batch_limit]]
-
-                # λ warmup: ramp from 0 to sae_lambda_l1 over first warmup_steps
-                if warmup_steps > 0 and step < warmup_steps:
-                    current_lambda = config.sae_lambda_l1 * (step / warmup_steps)
-                else:
-                    current_lambda = config.sae_lambda_l1
-
-                if not init_logged:
-                    with torch.no_grad():
-                        init_total, init_recon, init_sparse = sae.loss(act, lambda_l1=0.0)
-                        _, init_z = sae(act)
-                    init_stats = sae.activation_stats(init_z)
-                    curve_steps.append(0)
-                    curve_total.append(float(init_total))
-                    curve_recon.append(float(init_recon))
-                    curve_sparse.append(float(init_sparse))
-                    if eval_loader is not None:
-                        ev_total, ev_recon, ev_sparse = _collect_eval_loss(
-                            sae, model, eval_loader, layer_id, activation_source,
-                            is_cls_model, token_idx, 0.0, config.device,
-                            eval_chunk_tokens=eval_chunk_tokens,
-                            act_scale=act_scale,
-                        )
-                        eval_curve_steps.append(0)
-                        eval_curve_total.append(ev_total)
-                        eval_curve_recon.append(ev_recon)
-                        eval_curve_sparse.append(ev_sparse)
-                    print(
-                        f'sae layer {layer_id} step 0/{config.sae_steps} '
-                        f'total={float(init_total):.6f} recon={float(init_recon):.6f} sparse={float(init_sparse):.6f} '
-                        f'active_fraction={init_stats["active_fraction"]:.6f} dead_features={init_stats["dead_features"]}'
+                    init_total, init_recon, init_sparse, init_z = sae.loss(act, lambda_l1=0.0, return_z=True)
+                init_stats = sae.activation_stats(init_z)
+                curve_steps.append(0)
+                curve_total.append(float(init_total))
+                curve_recon.append(float(init_recon))
+                curve_sparse.append(float(init_sparse))
+                if eval_loader is not None:
+                    ev_total, ev_recon, ev_sparse = _collect_eval_loss(
+                        sae, model, eval_loader, layer_id, activation_source,
+                        is_cls_model, token_idx, 0.0, config.device,
+                        eval_chunk_tokens=eval_chunk_tokens,
+                        act_scale=act_scale, pool_w=pool_w,
                     )
-                    init_logged = True
+                    activation_buffer.clear()
+                    eval_curve_steps.append(0)
+                    eval_curve_total.append(ev_total)
+                    eval_curve_recon.append(ev_recon)
+                    eval_curve_sparse.append(ev_sparse)
+                print(
+                    f'sae layer {layer_id} step 0/{config.sae_steps} '
+                    f'total={float(init_total):.6f} recon={float(init_recon):.6f} sparse={float(init_sparse):.6f} '
+                    f'active_fraction={init_stats["active_fraction"]:.6f} dead_features={init_stats["dead_features"]}'
+                )
+                init_logged = True
 
-                total_loss, recon_loss, sparse_loss = sae.loss(act, lambda_l1=current_lambda)
-                optimizer.zero_grad()
-                total_loss.backward()
-                optimizer.step()
+            total_loss, recon_loss, sparse_loss = sae.loss(act, lambda_l1=current_lambda)
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
 
-                # LR linear decay: ramp down to 0 over last lr_decay_frac of steps
-                if step >= decay_start:
-                    frac_remaining = 1.0 - (step - decay_start) / max(config.sae_steps - decay_start, 1)
-                    new_lr = config.sae_lr * max(frac_remaining, 0.0)
-                    for pg in optimizer.param_groups:
-                        pg['lr'] = new_lr
+            # LR linear decay: ramp down to 0 over last lr_decay_frac of steps
+            if step >= decay_start:
+                frac_remaining = 1.0 - (step - decay_start) / max(config.sae_steps - decay_start, 1)
+                new_lr = config.sae_lr * max(frac_remaining, 0.0)
+                for pg in optimizer.param_groups:
+                    pg['lr'] = new_lr
 
-                last_total, last_recon, last_sparse = float(total_loss), float(recon_loss), float(sparse_loss)
-                with torch.no_grad():
-                    _, last_z = sae(act)
+            last_total, last_recon, last_sparse = float(total_loss), float(recon_loss), float(sparse_loss)
+            last_act = act
 
-                step += 1
-                if step in log_steps_set:
-                    curve_steps.append(step)
-                    curve_total.append(last_total)
-                    curve_recon.append(last_recon)
-                    curve_sparse.append(last_sparse)
-                    if eval_loader is not None:
-                        ev_total, ev_recon, ev_sparse = _collect_eval_loss(
-                            sae, model, eval_loader, layer_id, activation_source,
-                            is_cls_model, token_idx, current_lambda, config.device,
-                            eval_chunk_tokens=eval_chunk_tokens,
-                            act_scale=act_scale,
-                        )
-                        eval_curve_steps.append(step)
-                        eval_curve_total.append(ev_total)
-                        eval_curve_recon.append(ev_recon)
-                        eval_curve_sparse.append(ev_sparse)
-                    print(
-                        f'sae layer {layer_id} step {step}/{config.sae_steps} '
-                        f'λ={current_lambda:.4g} '
-                        f'total={last_total:.6f} recon={last_recon:.6f} sparse={last_sparse:.6f}'
-                        + (f'  |  eval total={ev_total:.6f} recon={ev_recon:.6f} sparse={ev_sparse:.6f}'
-                           if eval_loader is not None else '')
+            if step + 1 in log_steps_set:
+                curve_steps.append(step + 1)
+                curve_total.append(last_total)
+                curve_recon.append(last_recon)
+                curve_sparse.append(last_sparse)
+                if eval_loader is not None:
+                    ev_total, ev_recon, ev_sparse = _collect_eval_loss(
+                        sae, model, eval_loader, layer_id, activation_source,
+                        is_cls_model, token_idx, current_lambda, config.device,
+                        eval_chunk_tokens=eval_chunk_tokens,
+                        act_scale=act_scale, pool_w=pool_w,
                     )
-
-                if step >= config.sae_steps:
-                    break
+                    activation_buffer.clear()
+                    eval_curve_steps.append(step + 1)
+                    eval_curve_total.append(ev_total)
+                    eval_curve_recon.append(ev_recon)
+                    eval_curve_sparse.append(ev_sparse)
+                print(
+                    f'sae layer {layer_id} step {step + 1}/{config.sae_steps} '
+                    f'lambda={current_lambda:.4g} '
+                    f'total={last_total:.6f} recon={last_recon:.6f} sparse={last_sparse:.6f}'
+                    + (f'  |  eval total={ev_total:.6f} recon={ev_recon:.6f} sparse={ev_sparse:.6f}'
+                       if eval_loader is not None else '')
+                )
 
         hook.remove()
 
-        stats = sae.activation_stats(last_z) if last_z is not None else {'active_fraction': 0.0, 'dead_features': latent_dim}
+        if last_act is not None:
+            with torch.no_grad():
+                _, last_z = sae(last_act)
+            stats = sae.activation_stats(last_z)
+        else:
+            stats = {'active_fraction': 0.0, 'dead_features': latent_dim}
         sae_metrics[layer_id] = {
             'total_loss': last_total,
             'recon_loss': last_recon,
             'sparse_loss': last_sparse,
             'active_fraction': stats['active_fraction'],
             'dead_features': stats['dead_features'],
-            'steps': step,
+            'steps': config.sae_steps,
             'latent_dim': latent_dim,
         }
         sae_state[layer_id] = copy.deepcopy(sae.state_dict())
@@ -372,22 +437,45 @@ def _normalize_model_state_dict_keys(state_dict):
 
 
 def _load_training_artifacts(args):
+    model_variant = getattr(args, 'model_variant', 'best')
+    if model_variant not in ('best', 'last'):
+        raise ValueError(f"model_variant must be 'best' or 'last', got {model_variant!r}")
+
     if args.train_output is not None:
         blob = torch.load(args.train_output, map_location='cpu', weights_only=False)
         assert isinstance(blob, dict) and 'config' in blob and 'output' in blob, (
             'train_output must be a main.py consolidated output containing config/output.'
         )
         output = blob['output']
-        assert 'model' in output, (
-            'No model weights found in train_output. Re-run transformer training with --save_models '
-            'or train with --checkpoints and use --config_checkpoint + --model_checkpoint.'
-        )
-        model_state = _normalize_model_state_dict_keys(output['model'])
-        return blob['config'], model_state, output.get('step'), output.get('rules')
+        if model_variant == 'best':
+            best = output.get('best')
+            if not isinstance(best, dict) or 'model' not in best:
+                raise RuntimeError(
+                    f"--model_variant=best requested but transformer artifact "
+                    f"{args.train_output!r} has no output['best']['model']. "
+                    f"Re-train transformer with the current main.py, "
+                    f"or pass --model_variant last."
+                )
+            model_state = _normalize_model_state_dict_keys(best['model'])
+            model_step = best.get('step', output.get('step'))
+        else:
+            assert 'model' in output, (
+                'No model weights found in train_output. Re-run transformer training with --save_models '
+                'or train with --checkpoints and use --config_checkpoint + --model_checkpoint.'
+            )
+            model_state = _normalize_model_state_dict_keys(output['model'])
+            model_step = output.get('step')
+        return blob['config'], model_state, model_step, output.get('rules'), model_variant
 
     assert args.model_checkpoint is not None and args.config_checkpoint is not None, (
         'Use either --train_output, or both --config_checkpoint and --model_checkpoint.'
     )
+
+    if model_variant == 'best':
+        raise RuntimeError(
+            "--model_variant=best is only supported with --train_output. "
+            "With --model_checkpoint the variant is implicit; pass --model_variant last."
+        )
 
     config_blob = torch.load(args.config_checkpoint, map_location='cpu', weights_only=False)
     config = config_blob['config'] if isinstance(config_blob, dict) and 'config' in config_blob else config_blob
@@ -396,13 +484,13 @@ def _load_training_artifacts(args):
     model_blob = torch.load(args.model_checkpoint, map_location='cpu', weights_only=False)
     if isinstance(model_blob, dict) and 'model' in model_blob:
         model_state = _normalize_model_state_dict_keys(model_blob['model'])
-        return config, model_state, model_blob.get('step'), rules
+        return config, model_state, model_blob.get('step'), rules, 'last'
     model_state = _normalize_model_state_dict_keys(model_blob)
-    return config, model_state, None, rules
+    return config, model_state, None, rules, 'last'
 
 
 def run(args):
-    config, model_state, model_step, fixed_rules = _load_training_artifacts(args)
+    config, model_state, model_step, fixed_rules, model_variant = _load_training_artifacts(args)
 
     # Apply SAE hyperparameter defaults (only if not already set in the loaded config)
     defaults = {
@@ -457,10 +545,16 @@ def run(args):
     transformer_seed = int(config.seed_sample)
     sae_train_seed = args.sae_train_seed_sample if args.sae_train_seed_sample is not None else transformer_seed + 1
     if sae_train_seed == transformer_seed:
-        sae_train_seed = transformer_seed + 1
+        raise ValueError(
+            f'sae_train_seed_sample ({sae_train_seed}) must differ from '
+            f'transformer seed_sample ({transformer_seed}) to avoid data overlap.'
+        )
     sae_eval_seed = args.sae_eval_seed_sample if args.sae_eval_seed_sample is not None else sae_train_seed + 1
     if sae_eval_seed == sae_train_seed:
-        sae_eval_seed = sae_train_seed + 1
+        raise ValueError(
+            f'sae_eval_seed_sample ({sae_eval_seed}) must differ from '
+            f'sae_train_seed_sample ({sae_train_seed}) to keep train/eval disjoint.'
+        )
 
     print(
         f'SAE data split: train_size={sae_train_size} (seed_sample={sae_train_seed}), '
@@ -531,6 +625,7 @@ def run(args):
                 'config_checkpoint': args.config_checkpoint,
                 'model_checkpoint': args.model_checkpoint,
                 'model_step': model_step,
+                'model_variant': model_variant,
             },
             'sae_dataset_split': {
                 'rules_source': 'artifact' if fixed_rules is not None else 'seed_rules_resampled',
@@ -572,12 +667,14 @@ def run(args):
 if __name__ == '__main__':
     torch.set_default_dtype(torch.float32)
 
-    parser = argparse.ArgumentParser(description='Post-hoc SAE training on trained transformer_class/transformer_meanclass checkpoints')
+    parser = argparse.ArgumentParser(description='Post-hoc SAE training on trained transformer_class/transformer_meanclass/transformer_meanclass_nores/transformer_freeclass/transformer_freeclass_nores checkpoints')
 
     parser.add_argument('--train_output', type=str, default=None, help='path to main.py output .pt/.pkl produced with --save_models')
     parser.add_argument('--config_checkpoint', type=str, default=None, help='path to <outname>_config.pt from --checkpoints runs')
     parser.add_argument('--model_checkpoint', type=str, default=None, help='path to model checkpoint (<outname>_t*.pt) or plain state_dict')
     parser.add_argument('--outname', type=str, default=None, help='output path for SAE artifact (default: source + _sae.pt)')
+    parser.add_argument('--model_variant', choices=['best', 'last'], default='best',
+                        help="which transformer weights to train SAE on: 'best' (lowest test loss) or 'last' (final step). Default: best.")
 
     parser.add_argument('--device', type=str, default=None)
     parser.add_argument('--sae_layer', type=int, default=None, help='single transformer layer id to train (overrides --sae_layers)')
@@ -588,7 +685,7 @@ if __name__ == '__main__':
     parser.add_argument('--sae_steps', type=int, default=None, help='number of optimization steps for each SAE')
     parser.add_argument('--sae_batch_limit', type=int, default=None, help='max tokens per SAE step (0 uses all tokens in batch)')
     parser.add_argument('--sae_sample_batch_size', type=int, default=None, help='number of RHM samples per forward pass used to gather SAE activations')
-    parser.add_argument('--sae_activation_source', type=str, default=None, help='which positions feed SAE: all_tokens, cls_token (transformer_class only), or one_token')
+    parser.add_argument('--sae_activation_source', type=str, default=None, help='which positions feed SAE: all_tokens, cls_token (transformer_class only), one_token, or mean_pooled (meanclass/freeclass models only; ln_f then pool over seq dim at last layer -- uniform mean for meanclass, learned weights for freeclass)')
     parser.add_argument('--sae_token_idx', type=int, default=None, help='0-based index of the real token to use when sae_activation_source=one_token (counts from 0 among sequence tokens, i.e. skips [CLS] for transformer_class)')
     parser.add_argument('--sae_log_points', type=int, default=None, help='number of log-spaced checkpoints to record during SAE training (default: 50)')
     parser.add_argument('--sae_train_size', type=int, default=None, help='number of RHM samples used to train SAE')

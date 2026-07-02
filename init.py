@@ -249,9 +249,59 @@ def init_model(args):
                 num_classes=args.num_classes,
                 dropout=args.dropout,
             )
-        
+
+        elif args.model == 'transformer_meanclass_nores':
+
+            if args.ffwd_size is None:
+                args.ffwd_size = 4
+            model = models.MeanClassificationTransformerNoResidual(
+                vocab_size=args.num_features,
+                block_size=args.num_tokens,
+                embedding_dim=args.embedding_dim,
+                num_heads=args.num_heads,
+                ffwd_size=args.ffwd_size,
+                num_layers=args.depth,
+                num_classes=args.num_classes,
+                dropout=args.dropout,
+            )
+
+        elif args.model == 'transformer_freeclass':
+
+            if args.ffwd_size is None:
+                args.ffwd_size = 4
+            model = models.FreeClassificationTransformer(
+                vocab_size=args.num_features,
+                block_size=args.num_tokens,
+                embedding_dim=args.embedding_dim,
+                num_heads=args.num_heads,
+                ffwd_size=args.ffwd_size,
+                num_layers=args.depth,
+                num_classes=args.num_classes,
+                dropout=args.dropout,
+            )
+
+        elif args.model == 'transformer_freeclass_nores':
+
+            if args.ffwd_size is None:
+                args.ffwd_size = 4
+            model = models.FreeClassificationTransformerNoResidual(
+                vocab_size=args.num_features,
+                block_size=args.num_tokens,
+                embedding_dim=args.embedding_dim,
+                num_heads=args.num_heads,
+                ffwd_size=args.ffwd_size,
+                num_layers=args.depth,
+                num_classes=args.num_classes,
+                dropout=args.dropout,
+            )
+
         else:
-            raise ValueError(f'Unknown transformer model: {args.model}. Expected one of: transformer_mla, transformer_clm, transformer_class, transformer_meanclass')
+            raise ValueError(
+                f'Unknown transformer model: {args.model}. Expected one of: '
+                'transformer_mla, transformer_clm, transformer_class, '
+                'transformer_meanclass, transformer_meanclass_nores, '
+                'transformer_freeclass, transformer_freeclass_nores'
+            )
 
     else:
         raise ValueError('model argument is invalid!')
@@ -272,14 +322,15 @@ def init_training( model, args):
     criterion = nn.CrossEntropyLoss( reduction='mean')
     #TODO: add other criteria
     
+    weight_decay = getattr(args, 'weight_decay', 0.0)
+
     if args.optim == 'sgd':
         optimizer = optim.SGD(
-            model.parameters(), lr=args.lr, momentum=args.momentum
+            model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=weight_decay
         )
-    #TODO: add arg for weight decay?
-    elif args.optim =='adam':
+    elif args.optim == 'adam':
         optimizer = optim.AdamW(
-            model.parameters(), lr=args.lr, weight_decay=0.
+            model.parameters(), lr=args.lr, weight_decay=weight_decay
         )
     else:
         raise ValueError("optimizer is invalid (sgd, adam)!")

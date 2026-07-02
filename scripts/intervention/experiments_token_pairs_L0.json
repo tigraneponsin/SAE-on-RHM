@@ -1,0 +1,31 @@
+[
+  {"name": "baseline", "interventions": []},
+
+  {"name": "L0_pos0-1_zero",     "interventions": [{"layer": 0, "positions": [0, 1], "mode": "zero"}]},
+  {"name": "L0_pos0-1_mean",     "interventions": [{"layer": 0, "positions": [0, 1], "mode": "mean"}]},
+  {"name": "L0_pos0-1_resample", "interventions": [{"layer": 0, "positions": [0, 1], "mode": "resample"}]},
+
+  {"name": "L0_pos1-2_zero",     "interventions": [{"layer": 0, "positions": [1, 2], "mode": "zero"}]},
+  {"name": "L0_pos1-2_mean",     "interventions": [{"layer": 0, "positions": [1, 2], "mode": "mean"}]},
+  {"name": "L0_pos1-2_resample", "interventions": [{"layer": 0, "positions": [1, 2], "mode": "resample"}]},
+
+  {"name": "L0_pos2-3_zero",     "interventions": [{"layer": 0, "positions": [2, 3], "mode": "zero"}]},
+  {"name": "L0_pos2-3_mean",     "interventions": [{"layer": 0, "positions": [2, 3], "mode": "mean"}]},
+  {"name": "L0_pos2-3_resample", "interventions": [{"layer": 0, "positions": [2, 3], "mode": "resample"}]},
+
+  {"name": "L0_pos3-4_zero",     "interventions": [{"layer": 0, "positions": [3, 4], "mode": "zero"}]},
+  {"name": "L0_pos3-4_mean",     "interventions": [{"layer": 0, "positions": [3, 4], "mode": "mean"}]},
+  {"name": "L0_pos3-4_resample", "interventions": [{"layer": 0, "positions": [3, 4], "mode": "resample"}]},
+
+  {"name": "L0_pos4-5_zero",     "interventions": [{"layer": 0, "positions": [4, 5], "mode": "zero"}]},
+  {"name": "L0_pos4-5_mean",     "interventions": [{"layer": 0, "positions": [4, 5], "mode": "mean"}]},
+  {"name": "L0_pos4-5_resample", "interventions": [{"layer": 0, "positions": [4, 5], "mode": "resample"}]},
+
+  {"name": "L0_pos5-6_zero",     "interventions": [{"layer": 0, "positions": [5, 6], "mode": "zero"}]},
+  {"name": "L0_pos5-6_mean",     "interventions": [{"layer": 0, "positions": [5, 6], "mode": "mean"}]},
+  {"name": "L0_pos5-6_resample", "interventions": [{"layer": 0, "positions": [5, 6], "mode": "resample"}]},
+
+  {"name": "L0_pos6-7_zero",     "interventions": [{"layer": 0, "positions": [6, 7], "mode": "zero"}]},
+  {"name": "L0_pos6-7_mean",     "interventions": [{"layer": 0, "positions": [6, 7], "mode": "mean"}]},
+  {"name": "L0_pos6-7_resample", "interventions": [{"layer": 0, "positions": [6, 7], "mode": "resample"}]}
+]

@@ -1,0 +1,592 @@
+"""Edge-weight computation for circuit tracing.
+
+Conventions (see docs/project_pipelines.md section 8 and our linearize.py):
+
+  - x_k          : [N, d]   post-block residual stream at layer k.
+  - z_k          : [N, F_k] raw post-ReLU SAE encoder output (no decoder norm).
+  - x_hat_k, e_k : [N, d]   SAE reconstruction (in residual-stream space, after
+                            dividing by act_scale_k) and error.
+  - W_enc_k      : [F_k, d]   encoder weight (= sae.encoder.weight).
+  - b_enc_k      : [F_k]      encoder bias.
+  - W_dec_k      : [d, F_k]   decoder weight (= sae.decoder.weight).
+  - act_scale_k  : float      scalar multiplied on x_k before the SAE encoder
+                              and divided out from the SAE decoder output.
+
+The SAE pre-activation at layer k+1 is computed on the *scaled* input:
+
+    pre_{k+1}[q, j] = W_enc_{k+1}[j, :] @ (act_scale_{k+1} * x_{k+1}[q, :])
+                      + b_enc_{k+1}[j].
+
+We decompose x_{k+1} = block_{k+1}(x_k) = block_{k+1}(x_hat_k + e_k) and use
+the linearized form M_{k+1} from scripts.circuit_tracing.linearize. With M_{k+1}
+defined as a centered map (M(0) = 0), only the perturbation parts contribute
+to attribution; the constant offset is bundled into the bias.
+
+Source decomposition at layer k:
+
+    x_hat_k = sum_{i, p : z_k[p,i] > 0}  v_{i, p}
+        with v_{i, p}[r, :] = delta(r = p) * z_k[p, i] * (W_dec_k[:, i] / act_scale_k).
+
+The error contribution is
+    err_p[r, :] = delta(r = p) * e_k[p, :]
+applied at position p only.
+
+Per-edge contribution to the SAE pre-activation at (j, q):
+
+    feat -> feat:  c_{j,q <- i,p} = act_scale_{k+1} * W_enc_{k+1}[j] . M_{k+1}(v_{i,p})[q]
+    err  -> feat:  c_{j,q <- err,p} = act_scale_{k+1} * W_enc_{k+1}[j] . M_{k+1}(err_p)[q]
+
+Embedding -> layer-0 feature edges use the same pattern with M_0 (= make_M
+with k_next=0, anchored at anchors.blocks[0].r_in == anchors.embed) and the
+per-position embedding rows as source vectors:
+
+    embed -> feat 0: c_{j,q <- embed,p} = act_scale_0 * W_enc_0[j] . M_0(embed_p)[q]
+
+For the final layer K-1, the "next stage" is ln_f -> weighted-pool ->
+classifier, where the pool uses weights w[p] (uniform 1/N for meanclass, learned
+softmax for freeclass; sum_p w[p] == 1). We freeze ln_f's mean/rstd
+(anchors.ln_f_mean, anchors.ln_f_rstd) so it is also affine. With ln_f_lin(v)
+the centered linearization of ln_f at its anchor:
+
+    feat -> logit_c:  W_cls[c] . ln_f_pool_lin(v_{i,p})
+                      where ln_f_pool_lin = sum_p w[p] * (centered ln_f
+                      linearization at row p). When v is nonzero only at row p,
+                      this equals w[p] * W_cls[c] . ln_f_jvp_at_p(W_dec_{K-1}[:, i] / act_scale_{K-1}) * z_{K-1}[p, i]
+                      (the w[p] comes from the pooling step; w[p]==1/N for meanclass).
+    err  -> logit_c:  W_cls[c] . ln_f_pool_lin(err_p)
+                      = w[p] * W_cls[c] . ln_f_jvp_at_p(e_{K-1}[p]).
+
+One edge per (i, p, c) and (p, c) -- per-class final-layer attribution.
+"""
+
+from __future__ import annotations
+
+import torch
+
+from scripts.circuit_tracing.linearize import (
+    FullAnchors, make_M, materialize_M,
+    _layernorm_apply, _pool_weights,
+)
+
+
+# ---------------------------------------------------------------------------
+# SAE forward + error nodes
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def sae_forward(x: torch.Tensor, sae, act_scale: float):
+    """Run an SAE on residual-stream activations x [N, d] using act_scale.
+
+    Returns (z, x_hat, e):
+      z     : [N, F]  raw post-ReLU encoder activations.
+      x_hat : [N, d]  reconstruction in residual-stream space (i.e. divided
+                       back by act_scale).
+      e     : [N, d]  error node (x - x_hat). By construction x_hat + e = x.
+    """
+    x_scaled = act_scale * x  # [N, d]
+    z = torch.relu(x_scaled @ sae.encoder.weight.T + sae.encoder.bias)
+    x_hat_scaled = z @ sae.decoder.weight.T + sae.decoder.bias
+    x_hat = x_hat_scaled / act_scale
+    e = x - x_hat
+    return z, x_hat, e
+
+
+@torch.no_grad()
+def sae_forward_pooled(pooled_vec: torch.Tensor, sae, act_scale: float):
+    """Run a mean-pooled last-layer SAE on a single pooled vector.
+
+    A mean_pooled SAE is trained on the pooled post-ln_f activation
+    pool_p(ln_f(x_{K-1})[p]) (uniform mean for meanclass, learned weighted sum
+    for freeclass), so its encoder input and reconstruction live in post-ln_f
+    pooled space (== anchors.pooled), NOT residual-stream space.
+
+    pooled_vec : [d]  the pooled activation (anchors.pooled).
+
+    Returns (z, x_hat, e):
+      z     : [1, F]  raw post-ReLU encoder activations (kept 2-D so the rest
+                       of the pipeline can index [0, i] and key labels (0, f)).
+      x_hat : [d]     reconstruction in pooled space.
+      e     : [d]     error (pooled_vec - x_hat). By construction x_hat + e ==
+                       pooled_vec.
+    """
+    x = pooled_vec.reshape(1, -1)  # [1, d]
+    x_scaled = act_scale * x
+    z = torch.relu(x_scaled @ sae.encoder.weight.T + sae.encoder.bias)  # [1, F]
+    x_hat_scaled = z @ sae.decoder.weight.T + sae.decoder.bias  # [1, d]
+    x_hat = (x_hat_scaled / act_scale).reshape(-1)  # [d]
+    e = pooled_vec.reshape(-1) - x_hat  # [d]
+    return z, x_hat, e
+
+
+# ---------------------------------------------------------------------------
+# Materialized-matrix path (used when N*d is small enough)
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def _dense_src_edges_matrix(
+    M_T: torch.Tensor,          # T = einsum('jc,qcpd->qpjd', W_enc_dst, M4): [N, N, F_dst, d]
+    src_vecs: torch.Tensor,     # [N, d] -- source vector at each position p
+    act_scale_dst: float,
+    active_dst: torch.Tensor,   # [N, F_dst] bool
+):
+    """Edges (p, j, q, w) where the source vector at position p is given
+    directly (no z, no W_dec): one source per position.
+
+    Used for both error -> dst-feature edges (src_vecs = e_k) and
+    embedding -> layer-0-feature edges (src_vecs = anchors.embed).
+
+    contribution[j, q <- p] = act_scale_dst * W_enc_dst[j] @ M[q, :, p, :] @ src_vecs[p, :]
+
+    Filters to active dst (active_dst[q, j]).
+    """
+    N = src_vecs.size(0)
+    if not active_dst.any():
+        return []
+    # E[q, p, j] = T[q, p, j, c] @ src_vecs[p, c]
+    E = torch.einsum('qpjd,pd->qpj', M_T, src_vecs) * act_scale_dst
+    dst_idx = active_dst.nonzero(as_tuple=False)  # [num_dst, 2] (q, j)
+    q_dst = dst_idx[:, 0]
+    j_dst = dst_idx[:, 1]
+    num_dst = dst_idx.size(0)
+    # Gather E at active (q, j) for all p: shape [num_dst, N].
+    E_dst = E[q_dst, :, j_dst]  # [num_dst, N]
+    p_all = torch.arange(N, device=E.device)
+    p_col = p_all.unsqueeze(0).expand(num_dst, N).reshape(-1)
+    j_col = j_dst.unsqueeze(1).expand(num_dst, N).reshape(-1)
+    q_col = q_dst.unsqueeze(1).expand(num_dst, N).reshape(-1)
+    w_col = E_dst.reshape(-1)
+    return list(zip(
+        p_col.tolist(), j_col.tolist(),
+        q_col.tolist(), w_col.tolist(),
+    ))
+
+
+@torch.no_grad()
+def _dense_src_edges_closure(
+    M,                          # callable v -> M(v), v: [N, d]
+    src_vecs: torch.Tensor,     # [N, d]
+    W_enc_dst: torch.Tensor,    # [F_dst, d]
+    act_scale_dst: float,
+    active_dst: torch.Tensor,   # [N, F_dst] bool
+):
+    """Closure-path version of _dense_src_edges_matrix. One M call per source
+    position p (N total). Slower, used when N*d > mat_threshold.
+    """
+    N, d = src_vecs.shape
+    if not active_dst.any():
+        return []
+    Wenc_scaled = act_scale_dst * W_enc_dst  # [F_dst, d]
+    dst_idx = active_dst.nonzero(as_tuple=False)
+    edges = []
+    v = torch.zeros(N, d, device=src_vecs.device, dtype=src_vecs.dtype)
+    for p in range(N):
+        v.zero_()
+        v[p] = src_vecs[p]
+        out = M(v)  # [N, d]
+        proj = out @ Wenc_scaled.T  # [N, F_dst]
+        for t in range(dst_idx.size(0)):
+            q, j = int(dst_idx[t, 0]), int(dst_idx[t, 1])
+            edges.append((p, j, q, float(proj[q, j].item())))
+    return edges
+
+
+@torch.no_grad()
+def _edges_via_matrix(
+    M_mat: torch.Tensor,       # [N*d, N*d]
+    z_k: torch.Tensor,          # [N, F_k]
+    e_k: torch.Tensor,          # [N, d]
+    W_dec_k: torch.Tensor,      # [d, F_k]
+    act_scale_k: float,
+    W_enc_kp1: torch.Tensor,    # [F_kp1, d]
+    act_scale_kp1: float,
+    z_kp1: torch.Tensor,        # [N, F_kp1] -- used to filter active dst features
+):
+    """Compute all attribution edges from layer k to layer k+1 SAE pre-activations
+    using the materialized M.
+
+    Returns:
+      feat_edges : list of (i, p, j, q, weight)
+      err_edges  : list of (p, j, q, weight)
+    Only edges to (j, q) with z_kp1[q, j] > 0 are returned.
+    """
+    N, d = e_k.shape
+    F_k = z_k.size(1)
+    F_kp1 = W_enc_kp1.size(0)
+    Nd = N * d
+
+    # Reshape M as [N, d, N, d] for clarity: M[q, c1, p, c2].
+    M4 = M_mat.view(N, d, N, d)
+
+    active_dst = z_kp1 > 0  # [N, F_kp1]
+    if not active_dst.any():
+        return [], []
+
+    # Shared pre-projection: T[q, p, j, c2] = W_enc_kp1[j, c1] @ M[q, c1, p, c2].
+    T = torch.einsum('jc,qcpd->qpjd', W_enc_kp1, M4)
+
+    # ---- feat -> feat ----
+    active_src = z_k > 0  # [N, F_k]
+    src_idx = active_src.nonzero(as_tuple=False)  # [num_src, 2] (p, i)
+    dst_idx = active_dst.nonzero(as_tuple=False)  # [num_dst, 2] (q, j)
+    num_src = src_idx.size(0)
+    num_dst = dst_idx.size(0)
+
+    if num_src == 0:
+        feat_edges = []
+    else:
+        scale = act_scale_kp1 / act_scale_k
+        p_src = src_idx[:, 0]
+        i_src = src_idx[:, 1]
+        q_dst = dst_idx[:, 0]
+        j_dst = dst_idx[:, 1]
+
+        # The full edge weight is
+        #   W_edges[s, t] = scale * z_k[p_src[s], i_src[s]]
+        #       * sum_c2 T[q_dst[t], p_src[s], j_dst[t], c2] * W_dec_k[c2, i_src[s]]
+        # Materializing contrib = scale * (T @ W_dec_k) * z_k over the full
+        # [N, N, F_kp1, F_k] grid (then fancy-indexing) needs ~tens of GiB.
+        # Instead gather only the active (q, j) and (p, i) slices first, so the
+        # largest intermediate is [num_dst, num_src, d].
+        T_dst = T[q_dst, :, j_dst, :]            # [num_dst, N, d] (over active q,j)
+        T_dst_p = T_dst[:, p_src, :]             # [num_dst, num_src, d] (over active p)
+        Wd_src = W_dec_k[:, i_src]               # [d, num_src] (over active i)
+        # Contract c2 with the matching source column for each s.
+        W_edges = torch.einsum('tsd,ds->st', T_dst_p, Wd_src)  # [num_src, num_dst]
+        z_src = z_k[p_src, i_src]                # [num_src]
+        W_edges = (scale * z_src).unsqueeze(1) * W_edges  # [num_src, num_dst]
+
+        i_col = i_src.unsqueeze(1).expand(num_src, num_dst).reshape(-1)
+        p_col = p_src.unsqueeze(1).expand(num_src, num_dst).reshape(-1)
+        j_col = j_dst.unsqueeze(0).expand(num_src, num_dst).reshape(-1)
+        q_col = q_dst.unsqueeze(0).expand(num_src, num_dst).reshape(-1)
+        w_col = W_edges.reshape(-1)
+        feat_edges = list(zip(
+            i_col.tolist(), p_col.tolist(),
+            j_col.tolist(), q_col.tolist(),
+            w_col.tolist(),
+        ))
+
+    # ---- err -> feat ----  (reuses the dense-source helper)
+    err_edges = _dense_src_edges_matrix(T, e_k, act_scale_kp1, active_dst)
+
+    return feat_edges, err_edges
+
+
+# ---------------------------------------------------------------------------
+# Closure path (fallback when N*d is large)
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def _edges_via_closure(
+    M,                          # callable v -> M(v), v: [N, d]
+    z_k: torch.Tensor,          # [N, F_k]
+    e_k: torch.Tensor,          # [N, d]
+    W_dec_k: torch.Tensor,      # [d, F_k]
+    act_scale_k: float,
+    W_enc_kp1: torch.Tensor,    # [F_kp1, d]
+    act_scale_kp1: float,
+    z_kp1: torch.Tensor,        # [N, F_kp1]
+):
+    """Same outputs as _edges_via_matrix, computed by running M on each
+    active source vector. One M call per active feature plus one per error
+    node per position.
+    """
+    N, d = e_k.shape
+    F_k = z_k.size(1)
+    active_src = z_k > 0  # [N, F_k]
+    active_dst = z_kp1 > 0  # [N, F_kp1]
+    if not active_dst.any():
+        return [], []
+
+    Wenc_scaled = act_scale_kp1 * W_enc_kp1  # [F_kp1, d]
+
+    # ---- feat -> feat ----
+    feat_edges = []
+    src_idx = active_src.nonzero(as_tuple=False)
+    dst_idx = active_dst.nonzero(as_tuple=False)
+    v = torch.zeros(N, d, device=e_k.device, dtype=e_k.dtype)
+    for s in range(src_idx.size(0)):
+        p, i = int(src_idx[s, 0]), int(src_idx[s, 1])
+        v.zero_()
+        v[p] = z_k[p, i] * (W_dec_k[:, i] / act_scale_k)
+        out = M(v)  # [N, d]
+        proj = out @ Wenc_scaled.T  # [N, F_kp1]
+        for t in range(dst_idx.size(0)):
+            q, j = int(dst_idx[t, 0]), int(dst_idx[t, 1])
+            feat_edges.append((i, p, j, q, float(proj[q, j].item())))
+
+    # ---- err -> feat ----  (reuses the dense-source closure helper)
+    err_edges = _dense_src_edges_closure(M, e_k, W_enc_kp1, act_scale_kp1, active_dst)
+
+    return feat_edges, err_edges
+
+
+@torch.no_grad()
+def edges_layer_to_layer(
+    model, k: int, anchors: FullAnchors,
+    z_k: torch.Tensor, e_k: torch.Tensor,
+    W_dec_k: torch.Tensor, act_scale_k: float,
+    W_enc_kp1: torch.Tensor, act_scale_kp1: float,
+    z_kp1: torch.Tensor,
+    mat_threshold: int,
+):
+    """Dispatch to matrix or closure path based on N*d <= mat_threshold."""
+    N, d = e_k.shape
+    if N * d <= mat_threshold:
+        M_mat = materialize_M(model, k + 1, anchors)
+        return _edges_via_matrix(
+            M_mat, z_k, e_k, W_dec_k, act_scale_k,
+            W_enc_kp1, act_scale_kp1, z_kp1,
+        )
+    M = make_M(model, k + 1, anchors)
+    return _edges_via_closure(
+        M, z_k, e_k, W_dec_k, act_scale_k,
+        W_enc_kp1, act_scale_kp1, z_kp1,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Layer K-2 (per-position) -> pooled last-layer SAE edges
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def edges_layer_to_pooled(
+    model, anchors: FullAnchors,
+    z_km2: torch.Tensor, e_km2: torch.Tensor,    # [N, F_{K-2}], [N, d]
+    W_dec_km2: torch.Tensor, act_scale_km2: float,  # [d, F_{K-2}], float
+    W_enc_pooled: torch.Tensor, act_scale_pooled: float,  # [F_p, d], float
+    z_pooled: torch.Tensor,                       # [1, F_p] (active filter)
+):
+    """Attribution edges from per-position layer K-2 into the pooled last-layer
+    SAE.
+
+    A source perturbation at layer K-2 passes through the linearized last block
+    M_{K-1}, then through the *centered* ln_f + mean-pool map (collapsing the N
+    positions to a single [d] vector), then into the pooled SAE encoder:
+
+        pooled_pert = _lnf_pool_lin(M_{K-1}(v))            # [d], centered
+        pre[j]      = act_scale_pooled * (W_enc_pooled[j] @ pooled_pert)
+
+    Source vectors (one per active feature, one per error position):
+        feat (p, i):  v[p] = z_{K-2}[p, i] * (W_dec_{K-2}[:, i] / act_scale_{K-2})
+        err  (p):     v[p] = e_{K-2}[p]
+
+    Closure-only: the destination is a single pooled node, so the matrix path
+    gives no benefit. One M_{K-1} call per active source.
+
+    Returns (feat_edges, err_edges):
+      feat_edges : list of (i, p, j, 0, weight)   -- dst position forced to 0
+      err_edges  : list of (p, j, 0, weight)
+    Filtered to z_pooled[0, j] > 0.
+    """
+    N, d = e_km2.shape
+    K = len(model.blocks)
+    active_dst = (z_pooled.reshape(-1) > 0)  # [F_p]
+    if not active_dst.any():
+        return [], []
+    j_dst = active_dst.nonzero(as_tuple=False).reshape(-1)  # [num_dst]
+    Wenc_active = W_enc_pooled[j_dst]  # [num_dst, d]
+
+    M = make_M(model, K - 1, anchors)
+
+    v = torch.zeros(N, d, device=e_km2.device, dtype=e_km2.dtype)
+
+    def _proj(v_src):
+        pooled_pert = _lnf_pool_lin(M(v_src), model, anchors)  # [d], centered
+        return act_scale_pooled * (Wenc_active @ pooled_pert)  # [num_dst]
+
+    # ---- feat -> pooled ----
+    feat_edges = []
+    active_src = z_km2 > 0  # [N, F_{K-2}]
+    src_idx = active_src.nonzero(as_tuple=False)
+    for s in range(src_idx.size(0)):
+        p, i = int(src_idx[s, 0]), int(src_idx[s, 1])
+        v.zero_()
+        v[p] = z_km2[p, i] * (W_dec_km2[:, i] / act_scale_km2)
+        proj = _proj(v)  # [num_dst]
+        for t in range(j_dst.numel()):
+            feat_edges.append((i, p, int(j_dst[t].item()), 0, float(proj[t].item())))
+
+    # ---- err -> pooled ----
+    err_edges = []
+    for p in range(N):
+        v.zero_()
+        v[p] = e_km2[p]
+        proj = _proj(v)  # [num_dst]
+        for t in range(j_dst.numel()):
+            err_edges.append((p, int(j_dst[t].item()), 0, float(proj[t].item())))
+
+    return feat_edges, err_edges
+
+
+# ---------------------------------------------------------------------------
+# Embedding -> layer-0-feature edges (M_0)
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def edges_embedding_to_layer0(
+    model, anchors: FullAnchors,
+    embed_anchor: torch.Tensor,    # [N, d] anchors.embed (= tok+pos rows)
+    z_0: torch.Tensor,              # [N, F_0] layer-0 SAE activations (active filter)
+    W_enc_0: torch.Tensor,          # [F_0, d] layer-0 SAE encoder
+    act_scale_0: float,
+    mat_threshold: int,
+):
+    """Compute embedding -> layer-0-feature attribution edges:
+
+        contribution[j, q <- ('embed', p)]
+          = act_scale_0 * W_enc_0[j] @ M_0(delta_p (x) embed_anchor[p])[q]
+
+    where M_0 is the centered linearization of block 0 anchored at
+    anchors.blocks[0].r_in == anchors.embed (so injecting the row-p part of
+    the embedding gives the per-position embedding contribution to layer-0
+    activations).
+
+    Returns: list of (p, j, q, weight). One entry per (p, active dst (j, q)).
+    Filtered to z_0[q, j] > 0.
+    """
+    N, d = embed_anchor.shape
+    active_dst = z_0 > 0
+    if not active_dst.any():
+        return []
+
+    if N * d <= mat_threshold:
+        M_mat = materialize_M(model, 0, anchors)
+        M4 = M_mat.view(N, d, N, d)
+        # T[q, p, j, c2] = W_enc_0[j, c1] @ M0[q, c1, p, c2]
+        T = torch.einsum('jc,qcpd->qpjd', W_enc_0, M4)
+        return _dense_src_edges_matrix(T, embed_anchor, act_scale_0, active_dst)
+    M = make_M(model, 0, anchors)
+    return _dense_src_edges_closure(M, embed_anchor, W_enc_0, act_scale_0, active_dst)
+
+
+# ---------------------------------------------------------------------------
+# Final-layer attribution to per-class logits
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def _lnf_pool_lin(v: torch.Tensor, model, anchors: FullAnchors) -> torch.Tensor:
+    """Centered linearization of (ln_f -> weighted-pool) at the anchor.
+
+    Given v [N, d], returns a [d] vector equal to
+        pool(ln_f_lin(anchor + v)) - pool(ln_f_lin(anchor)),
+    where pool(r) = sum_p w[p] * r[p] uses the model's pooling weights w
+    (uniform 1/N for meanclass, learned softmax for freeclass). Since ln_f_lin
+    is linear-affine and the weighted pool is linear, this is a linear function
+    of v.
+
+    Note: when v is nonzero only at row p, this equals
+        w[p] * ln_f_jvp_at_p(v[p])
+    (the per-position weight w[p] comes from the pooling step; w[p] == 1/N for
+    meanclass). So `W_cls[c] @ _lnf_pool_lin(v_p_only)` ==
+    `w[p] * W_cls[c] @ ln_f_jvp_at_p(v[p])`, matching the spec.
+    """
+    ln = _layernorm_apply(
+        anchors.ln_f_input, model.ln_f, anchors.ln_f_mean, anchors.ln_f_rstd
+    )
+    w = _pool_weights(model, ln.size(0), ln.device, ln.dtype)  # [N]
+    base = (w.view(-1, 1) * ln).sum(dim=0)
+    ln_pert = _layernorm_apply(
+        anchors.ln_f_input + v, model.ln_f, anchors.ln_f_mean, anchors.ln_f_rstd
+    )
+    pert = (w.view(-1, 1) * ln_pert).sum(dim=0)
+    return pert - base
+
+
+@torch.no_grad()
+def edges_final_layer_to_logits_per_class(
+    model, anchors: FullAnchors,
+    z_K: torch.Tensor, e_K: torch.Tensor,
+    W_dec_K: torch.Tensor, act_scale_K: float,
+    num_classes: int,
+):
+    """Per-class final-layer attribution.
+
+    For each class c and each active feature (i, p) at layer K-1:
+        attr[c <- (K-1, p, i)] = W_cls[c] @ _lnf_pool_lin(v_{i,p})
+            (= w[p] * W_cls[c] @ ln_f_jvp_at_p(W_dec_{K-1}[:,i]/act_scale_{K-1}) * z_{K-1}[p,i])
+
+    For each class c and each error position p at layer K-1:
+        attr[c <- (K-1, p, 'error')] = W_cls[c] @ _lnf_pool_lin(err_p)
+            (= w[p] * W_cls[c] @ ln_f_jvp_at_p(e_{K-1}[p]))
+    where w[p] is the model's pooling weight (1/N meanclass, learned freeclass).
+
+    Returns:
+      feat_to_logit : list of (i, p, c, weight)
+      err_to_logit  : list of (p, c, weight)
+    """
+    N, d = e_K.shape
+    F_K = z_K.size(1)
+    W_cls = model.classifier.weight  # [num_classes, d]
+
+    active_src = z_K > 0
+    src_idx = active_src.nonzero(as_tuple=False)
+
+    v = torch.zeros(N, d, device=e_K.device, dtype=e_K.dtype)
+
+    feat_to_logit = []
+    for s in range(src_idx.size(0)):
+        p, i = int(src_idx[s, 0]), int(src_idx[s, 1])
+        v.zero_()
+        v[p] = z_K[p, i] * (W_dec_K[:, i] / act_scale_K)
+        pooled_v = _lnf_pool_lin(v, model, anchors)  # [d]
+        # Vectorized over classes: W_cls @ pooled_v gives [num_classes].
+        per_class = W_cls @ pooled_v  # [num_classes]
+        for c in range(num_classes):
+            feat_to_logit.append((i, p, c, float(per_class[c].item())))
+
+    err_to_logit = []
+    for p in range(N):
+        v.zero_()
+        v[p] = e_K[p]
+        pooled_v = _lnf_pool_lin(v, model, anchors)
+        per_class = W_cls @ pooled_v  # [num_classes]
+        for c in range(num_classes):
+            err_to_logit.append((p, c, float(per_class[c].item())))
+
+    return feat_to_logit, err_to_logit
+
+
+@torch.no_grad()
+def edges_pooled_final_to_logits_per_class(
+    model,
+    z_pooled: torch.Tensor,       # [1, F] or [F] pooled SAE activations
+    e_pooled: torch.Tensor,       # [d] pooled error
+    W_dec_pooled: torch.Tensor,   # [d, F] pooled SAE decoder weight
+    act_scale_pooled: float,
+    num_classes: int,
+):
+    """Per-class final-layer attribution for a pooled last-layer SAE.
+
+    The pooled SAE feature already lives in post-ln_f pooled space, so ln_f and
+    mean-pool have already been applied. There is no _lnf_pool_lin, no 1/N, and
+    a single position p=0. The classifier is a bare nn.Linear, so:
+
+        feat i -> logit c:  W_cls[c] @ (z_pooled[i] * W_dec_pooled[:, i] / act_scale_pooled)
+        err    -> logit c:  W_cls[c] @ e_pooled
+
+    Summed over active features + error this equals W_cls @ pooled + b_cls ==
+    logits (completeness), since x_hat_pooled + e_pooled == pooled.
+
+    Returns:
+      feat_to_logit : list of (i, 0, c, weight)
+      err_to_logit  : list of (0, c, weight)
+    Filtered to z_pooled[i] > 0.
+    """
+    z = z_pooled.reshape(-1)  # [F]
+    W_cls = model.classifier.weight  # [num_classes, d]
+
+    feat_to_logit = []
+    active = (z > 0).nonzero(as_tuple=False).reshape(-1)
+    for i in active.tolist():
+        contrib = z[i] * (W_dec_pooled[:, i] / act_scale_pooled)  # [d]
+        per_class = W_cls @ contrib  # [num_classes]
+        for c in range(num_classes):
+            feat_to_logit.append((i, 0, c, float(per_class[c].item())))
+
+    err_to_logit = []
+    per_class_err = W_cls @ e_pooled.reshape(-1)  # [num_classes]
+    for c in range(num_classes):
+        err_to_logit.append((0, c, float(per_class_err[c].item())))
+
+    return feat_to_logit, err_to_logit
