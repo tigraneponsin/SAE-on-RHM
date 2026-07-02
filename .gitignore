@@ -85,3 +85,8 @@ slurm/sae/run_optuna.sh
 
 # Campaign-specific intervention configs (kept locally, not published)
 scripts/intervention/experiments_per_token_v*_L*_layer*.json
+
+# Editor / tooling config (per-user, not part of the project)
+.vscode/
+.claude/
+.github/workflows/
