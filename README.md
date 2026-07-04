@@ -87,9 +87,6 @@ schemas, and the end-to-end workflow.
 ## Acknowledgments
 
 This repository is built on the original Random Hierarchy Model codebase by
-Cagnetta, Petrini, and collaborators, which accompanies Cagnetta et al.,
-*Phys. Rev. X* 14, 2024. The RHM data generator and transformer-training
-scaffolding derive from that project (see `LICENSE`); the SAE, circuit-tracing,
+Cagnetta, Petrini, and collaborators(see `LICENSE`); the SAE, circuit-tracing,
 and analysis tooling are added here.
-
-Original RHM repository: <ORIGINAL_RHM_REPO_URL>
+Original RHM repository: https://github.com/fracagnetta/random-hierarchy-model
