@@ -46,7 +46,6 @@ level, so downstream analyses can compare against the ground-truth latents.
 | `scripts/intervention/` | Residual-stream token ablations |
 | `scripts/sae_direct_analysis/` | Per-value feature-selectivity plots |
 | `scripts/circuit_tracing/` | Linearization, attribution, pruning, grouping, visualization |
-| `slurm/` | Cluster launchers, one per pipeline stage |
 | `docs/` | Pipeline reference and SAE-eval guide |
 
 ## Requirements
@@ -56,8 +55,7 @@ tracing), and `optuna` (optional, for SAE lr tuning).
 
 ## Quickstart
 
-Each stage runs standalone from the command line; the `slurm/` launchers wrap the
-same commands. Minimal shapes:
+Each stage runs standalone from the command line. Minimal shapes:
 
 ```bash
 # 1. Train a transformer on the RHM
@@ -81,14 +79,17 @@ Downstream tooling (each consumes the eval artifacts): tree reconstruction
 (`scripts/sae_tree_reconstruction/run.py`), token ablations
 (`scripts/intervention/ablate_tokens.py`), and circuit tracing
 (`python -m scripts.circuit_tracing.circuit_trace`). Per-layer SAE sweeps are
-generated with `scripts/sae_sweep/generate_sweep.py` and run via
-`slurm/sae/run_full_sweep.sh`.
+generated with `scripts/sae_sweep/generate_sweep.py`.
 
 See [`docs/project_pipelines.md`](docs/project_pipelines.md) for flags, artifact
 schemas, and the end-to-end workflow.
 
-## Notes for reuse
+## Acknowledgments
 
-The `slurm/` launchers target a specific cluster (partitions, conda env, absolute
-paths) and are included as runnable references for the commands and
-hyperparameters, not as portable scripts.
+This repository is built on the original Random Hierarchy Model codebase by
+Cagnetta, Petrini, and collaborators, which accompanies Cagnetta et al.,
+*Phys. Rev. X* 14, 2024. The RHM data generator and transformer-training
+scaffolding derive from that project (see `LICENSE`); the SAE, circuit-tracing,
+and analysis tooling are added here.
+
+Original RHM repository: <ORIGINAL_RHM_REPO_URL>

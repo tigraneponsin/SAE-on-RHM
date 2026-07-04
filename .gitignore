@@ -69,21 +69,13 @@ dmypy.json
 dataframes/
 figures/
 
-# Personal / one-off cluster launchers (kept locally, not published)
-slurm/**/Job_*.sh
-slurm/Sbatch_jupyter.sh
-slurm/interactive.sh
-slurm/jforward.sh
-slurm/transformer/Sbatch_parameter_tuning.sh
-slurm/transformer/Sbatch_scaling_laws_transformer.sh
-slurm/transformer/Sbatch_trsf_for_stats.sh
-slurm/sae/run_eval.sh
-slurm/sae/run_eval_intervention.sh
-slurm/sae/run_analysis.sh
-slurm/sae/run_circuit_trace.sh
-slurm/sae/run_optuna.sh
+# Cluster launchers (target a specific cluster, hardcode local paths; kept local)
+/slurm/
 
-# Campaign-specific intervention configs (kept locally, not published)
+# AI assistant project instructions (kept local)
+/CLAUDE.md
+
+# Campaign-specific intervention configs (kept locally)
 scripts/intervention/experiments_per_token_v*_L*_layer*.json
 
 # Editor / tooling config (per-user, not part of the project)
