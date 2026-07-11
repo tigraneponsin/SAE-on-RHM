@@ -590,15 +590,16 @@ def min_make_level_dist_plot(diags, out_prefix, scheme='fire', xlim=None,
                      else 'pos %d (parent %d,%d)' % (p_idx, _lvl(pg[0]), pg[1]),
                      fontsize=9)
         ax.set_xlabel(r'$\lambda$', fontsize=12)
-        ax.set_ylabel('share', fontsize=12)
+        ax.set_ylabel('weighted feature fraction', fontsize=12)
         if p_idx == 0:
             ax.legend(fontsize=7, loc='upper right')
 
     for k in range(P, len(axes)):
         axes[k].axis('off')
 
+    weight_desc = 'unweighted' if scheme == 'unweighted' else '%s weights' % scheme
     fig.suptitle('Unconstrained argmin-target level distribution by position '
-                 '(%s weights)' % scheme)
+                 '(%s)' % weight_desc)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     out = Path('%s_leveldist_%s.png' % (out_prefix, scheme))
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -678,8 +679,9 @@ def min_make_plot(diags, out_prefix, scheme='fire', xlim=None, report=False,
     for k in range(total_panels, len(axes)):
         axes[k].axis('off')
 
+    weight_desc = 'unweighted' if scheme == 'unweighted' else '%s weights' % scheme
     fig.suptitle('Parent / level / unconstrained conditional entropy '
-                 '(%s weights)' % scheme)
+                 '(%s)' % weight_desc)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     out = Path('%s_%s.png' % (out_prefix, scheme))
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1004,7 +1006,7 @@ def split_make_level_dist_plot(diags, out_prefix, variant, scheme='fire',
                      else 'pos %d (parent %d,%d)' % (p_idx, _lvl(pg[0]), pg[1]),
                      fontsize=9)
         ax.set_xlabel(r'$\lambda$', fontsize=12)
-        ax.set_ylabel('share', fontsize=12)
+        ax.set_ylabel('weighted feature fraction', fontsize=12)
         if p_idx == 0:
             ax.legend(fontsize=7, loc='upper left')
 
@@ -1013,7 +1015,9 @@ def split_make_level_dist_plot(diags, out_prefix, variant, scheme='fire',
 
     title = ('Unconstrained argmin' if variant == 'unconstrained'
              else 'Split-check reassigned')
-    fig.suptitle('%s target level distribution by position' % title)
+    weight_desc = 'unweighted' if scheme == 'unweighted' else '%s weights' % scheme
+    fig.suptitle('%s target level distribution by position (%s)'
+                 % (title, weight_desc))
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     out = Path('%s_leveldist_%s_%s.png' % (out_prefix, variant, scheme))
     out.parent.mkdir(parents=True, exist_ok=True)

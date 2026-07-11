@@ -14,8 +14,10 @@ from pathlib import Path
 
 import torch
 
-# weight schemes -> (csv suffix, label); mirrors scripts/sae_eval/streaming.py.
-SCHEMES = ('fire', 'raw', 'dec')
+# weight schemes -> (csv suffix, label); 'fire'/'raw'/'dec' mirror
+# scripts/sae_eval/streaming.py. 'unweighted' is diag-only (not stored in the
+# sae_eval artifact): every feature that ever fires counts equally.
+SCHEMES = ('fire', 'raw', 'dec', 'unweighted')
 
 
 def torch_nanmin(x, dim):
@@ -61,6 +63,8 @@ def weights_for_scheme(scheme, firing_rate_p, baseline_mean_p, decoder_norms):
         return baseline_mean_p / decoder_norms.clamp_min(1e-30)
     if scheme == 'dec':
         return baseline_mean_p
+    if scheme == 'unweighted':
+        return (firing_rate_p > 0).float()
     raise ValueError('unknown scheme %r' % scheme)
 
 
