@@ -1,5 +1,8 @@
 # Sparse Autoencoders on the Random Hierarchy Model
 
+**Report:** [Mechanistic Interpretability with Known Ground Truth: Benchmarking Sparse Autoencoders on the Random Hierarchy Model](Report_EPFL.pdf) (EPFL internship report, 2026)
+**Interactive circuits:** [circuit gallery](https://tigraneponsin.github.io/RHM-circuit-examples/), with recovered circuits shown next to the ground-truth RHM tree
+
 This repository implements the Random Hierarchy Model (RHM), trains transformers
 to classify it, and provides tooling to train and evaluate sparse autoencoders
 (SAEs) on the trained transformers and to trace per-input circuits through them.
